@@ -16,6 +16,7 @@ from ..config import Config
 from ..diffing.parser import parse_unified_diff, snippet_for_lines
 from ..models import CodeChangeInfo
 from ..pipeline.orchestrator import ReviewPipeline
+from ..provider.errors import is_billing_failure
 from .matcher import MATCHER_VERSION, Matcher
 from .model import Corpus, CorpusPr, PrPart, RawFinding
 from .worktree import WorktreePool
@@ -155,6 +156,14 @@ def _score_one(pipeline: ReviewPipeline, matcher: Matcher, pr: CorpusPr) -> PrPa
                 )
                 part.findings.append(matcher.match(finding, pr, snippet))
     except Exception as exc:  # noqa: BLE001 - one bad PR must not sink the run
+        if is_billing_failure(exc):
+            # Every remaining PR would fail identically. Stop now so the parts
+            # already on disk stay usable and the run can resume after a top-up.
+            raise SystemExit(
+                f"Stopped at {pr.id}: the account cannot pay for further requests. "
+                "Top up, then rerun the same command — completed PRs resume from "
+                "their checkpoints."
+            ) from exc
         log.error("benchmark failed for %s: %s", pr.id, exc)
         part.failed = True
         part.error = str(exc)

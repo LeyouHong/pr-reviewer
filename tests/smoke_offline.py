@@ -183,6 +183,19 @@ try:
 except ValueError:
     check("unknown $ref raises", True)
 
+print("\n[6b] error classification")
+from reviewer.provider.errors import ErrorKind, classify, is_billing_failure
+cases = [
+    ("Error code: 402 - {'message': 'Insufficient Balance'}", ErrorKind.FATAL, True),
+    ("Error code: 429 - rate limit exceeded", ErrorKind.CAPACITY, False),
+    ("Request timed out", ErrorKind.TRANSPORT, False),
+    ("503 Service Unavailable", ErrorKind.TRANSPORT, False),
+]
+for text, want, billing in cases:
+    got = classify(RuntimeError(text))
+    check(f"{text[:34]!r} -> {want.value}", got is want, got.value)
+    check(f"  billing flag == {billing}", is_billing_failure(RuntimeError(text)) is billing)
+
 print("\n[7] json repair")
 check("fenced json recovered", loads_with_recovery('```json\n{"a": 1}\n```')["a"] == 1)
 check("prose-wrapped json recovered", loads_with_recovery('Here you go:\n{"a": 2}\nDone.')["a"] == 2)

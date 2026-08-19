@@ -42,6 +42,17 @@ class ContentError(RuntimeError):
     """Output did not satisfy the schema and re-driving the model may fix it."""
 
 
+class BillingError(RuntimeError):
+    """The account cannot pay for the request.
+
+    Distinct from a rate limit even though both arrive as a refusal to serve:
+    waiting fixes a rate limit and does nothing at all for an empty wallet.
+    Classified FATAL so it fails on the first attempt, and surfaced as its own
+    type so a long run can abort instead of grinding every remaining unit of
+    work against the same wall.
+    """ 
+
+
 _TRANSPORT_MARKERS = (
     "timed out",
     "timeout",
@@ -61,9 +72,18 @@ _CAPACITY_MARKERS = (
     "rate_limit",
     "too many requests",
     "429",
-    "quota",
-    "insufficient balance",
     "concurrency",
+)
+
+# Checked before the capacity markers: these never clear on their own.
+_BILLING_MARKERS = (
+    "insufficient balance",
+    "insufficient_quota",
+    "exceeded your current quota",
+    "billing",
+    "payment required",
+    " 402",
+    "402 -",
 )
 
 _CONTENT_MARKERS = (
@@ -91,8 +111,16 @@ def classify(exc: BaseException) -> ErrorKind:
         if isinstance(link, ContentError):
             return ErrorKind.CONTENT
 
+        if isinstance(link, BillingError):
+            return ErrorKind.FATAL
+
         name = type(link).__name__.lower()
         text = str(link).lower()
+
+        # Must precede the capacity check: an unpayable account is not a queue
+        # to wait in, and retrying it burns the backoff budget for nothing.
+        if any(m in text for m in _BILLING_MARKERS):
+            return ErrorKind.FATAL
 
         if "ratelimit" in name or any(m in text for m in _CAPACITY_MARKERS):
             return ErrorKind.CAPACITY
@@ -165,3 +193,13 @@ def with_retries(fn: Callable[[], T], *, label: str = "call") -> T:
             time.sleep(wait)
 
     raise AssertionError(f"unreachable: {last}")
+
+
+def is_billing_failure(exc: BaseException) -> bool:
+    """True when the failure is an unpayable account rather than a bad request."""
+    for link in _chain(exc):
+        if isinstance(link, BillingError):
+            return True
+        if any(m in str(link).lower() for m in _BILLING_MARKERS):
+            return True
+    return False
