@@ -23,7 +23,7 @@ from ..models import (
 )
 from ..policy import PolicyRouter
 from ..prompt import PromptLibrary, file_changes_block, render
-from ..provider import DeepSeekClient
+from ..provider import ProviderClient
 from ..tools.fs_tools import TOOL_SPECS, FileSystemTools
 
 log = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ _TOOL_DESC = "Submit the structured review of the file change under review."
 class FileReviewer:
     def __init__(
         self,
-        client: DeepSeekClient,
+        client: ProviderClient,
         library: PromptLibrary,
         router: PolicyRouter,
         config: Config,

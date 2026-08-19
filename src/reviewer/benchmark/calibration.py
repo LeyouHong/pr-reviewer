@@ -14,7 +14,7 @@ from typing import Optional
 
 from ..config import Config
 from ..prompt import PromptLibrary
-from ..provider import DeepSeekClient
+from ..provider import make_client
 from .matcher import MATCHER_VERSION, Matcher
 from .model import CorpusPr, GroundTruthIssue, RawFinding
 
@@ -45,7 +45,7 @@ class CalibrationResult:
 def run_calibration(
     config: Config, cases: list[CalibrationCase]
 ) -> tuple[list[CalibrationResult], str]:
-    client = DeepSeekClient(config)
+    client = make_client(config)
     matcher = Matcher(client, PromptLibrary(config.resources_dir))
 
     results: list[CalibrationResult] = []

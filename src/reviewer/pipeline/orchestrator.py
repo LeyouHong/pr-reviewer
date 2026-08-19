@@ -18,7 +18,7 @@ from ..models import (
 )
 from ..policy import PolicyRouter
 from ..prompt import PromptLibrary
-from ..provider import DeepSeekClient
+from ..provider import make_client
 from ..tools.fs_tools import FileSystemTools
 from .apply import ValidationOutcome, apply_verdict
 from .qualify import Qualifier
@@ -32,9 +32,11 @@ log = logging.getLogger(__name__)
 class ReviewPipeline:
     def __init__(self, config: Config):
         self.config = config
-        self.library = PromptLibrary(config.resources_dir)
+        self.library = PromptLibrary(
+            config.resources_dir, role_variant=config.role_variant
+        )
         self.router = PolicyRouter(config.resources_dir)
-        self.client = DeepSeekClient(config)
+        self.client = make_client(config)
         self.tools = FileSystemTools(config.repo_path)
 
         self.reviewer = FileReviewer(

@@ -31,6 +31,11 @@ class Config:
     repo_path: Path = field(default_factory=Path.cwd)
     resources_dir: Path = field(default_factory=lambda: _default_resources())
 
+    # Prompt variant used for role priming. Defaults to ``default``; a provider
+    # with different tone conventions ships its own set under
+    # ``resources/role/<name>/`` and passes the name here.
+    role_variant: str = "default"
+
     # Pipeline switches
     # Give the reviewer read-only tools and let it investigate. Costs more per
     # file, but a non-agentic reviewer sees one diff and nothing else, so every

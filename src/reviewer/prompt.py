@@ -31,9 +31,13 @@ def render(template: str, **values: object) -> str:
     return _PLACEHOLDER.sub(_sub, template)
 
 
+_DEFAULT_ROLE_VARIANT = "default"
+
+
 class PromptLibrary:
-    def __init__(self, resources: Path):
+    def __init__(self, resources: Path, *, role_variant: str = _DEFAULT_ROLE_VARIANT):
         self.resources = Path(resources)
+        self.role_variant = role_variant or _DEFAULT_ROLE_VARIANT
 
     @lru_cache(maxsize=64)
     def _read(self, relative: str) -> str:
@@ -48,7 +52,19 @@ class PromptLibrary:
     # -- roles ------------------------------------------------------------
 
     def role(self, name: str) -> str:
-        return self._read(f"role/{name}.md")
+        """Load the role prompt, preferring the model-specific variant.
+
+        A different model family often needs a different tone or output
+        convention while the underlying task and rules stay identical. Splitting
+        the role file lets a new provider tune priming without forking every
+        task prompt. Missing variants fall back to ``default`` so a partial
+        override does not break the pipeline.
+        """
+        if self.role_variant != _DEFAULT_ROLE_VARIANT:
+            variant_path = self.resources / "role" / self.role_variant / f"{name}.md"
+            if variant_path.is_file():
+                return self._read(f"role/{self.role_variant}/{name}.md")
+        return self._read(f"role/{_DEFAULT_ROLE_VARIANT}/{name}.md")
 
     # -- tasks ------------------------------------------------------------
 

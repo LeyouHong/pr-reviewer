@@ -6,8 +6,8 @@ Three call shapes cover the whole pipeline:
 ``complete_structured``  strict function-call output validated into a Pydantic model
 ``run_agent``            manual tool loop for the agentic validator
 
-Everything funnels through :func:`provider.errors.with_retries`, so no caller
-implements its own backoff.
+Everything funnels through :func:`exception_handling.with_retries`, so no
+caller implements its own backoff.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from .. import constants
 from ..config import Config
-from .errors import ContentError, DegenerateOutputError, with_retries
+from ..exception_handling import ContentError, DegenerateOutputError, with_retries
 from .json_repair import clamp_and_revalidate, loads_with_recovery
 from .strict_schema import build_strict_tool
 

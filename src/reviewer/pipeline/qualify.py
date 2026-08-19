@@ -21,7 +21,7 @@ from ..models import (
 )
 from ..diffing.scope import scope_section
 from ..prompt import PromptLibrary, render
-from ..provider import DeepSeekClient
+from ..provider import ProviderClient
 
 log = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ def heuristic_verdict(
 
 
 class Qualifier:
-    def __init__(self, client: DeepSeekClient, library: PromptLibrary):
+    def __init__(self, client: ProviderClient, library: PromptLibrary):
         self._client = client
         self._library = library
 

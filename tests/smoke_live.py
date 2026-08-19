@@ -73,8 +73,8 @@ check("last line is the bare keyword", text.strip().splitlines()[-1].strip().low
 print("\n[3] agentic tool loop")
 tools = FileSystemTools(Path(__file__).resolve().parents[1])
 result = client.run_agent(
-    "Use list_directory on 'resources/role' and then read_file on "
-    "'resources/role/reviewer.md'. Then state on the last line exactly: "
+    "Use list_directory on 'resources/role/default' and then read_file on "
+    "'resources/role/default/reviewer.md'. Then state on the last line exactly: "
     "Verdict: TRUE_POSITIVE",
     tool_specs=TOOL_SPECS, dispatch=tools.dispatch, max_turns=6, label="smoke-agent")
 check("model called tools", result.used_tools,

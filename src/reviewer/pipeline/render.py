@@ -15,7 +15,7 @@ from ..models import (
     Severity,
 )
 from ..prompt import PromptLibrary, render
-from ..provider import DeepSeekClient
+from ..provider import ProviderClient
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _issue_lines(comments: list[ReviewComment]) -> str:
 
 
 class Summarizer:
-    def __init__(self, client: DeepSeekClient, library: PromptLibrary):
+    def __init__(self, client: ProviderClient, library: PromptLibrary):
         self._client = client
         self._library = library
 

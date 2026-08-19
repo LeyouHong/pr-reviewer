@@ -8,7 +8,7 @@ import re
 from .. import constants
 from ..models import FileChange, ReviewComment, ValidateVerdict
 from ..prompt import PromptLibrary, render
-from ..provider import DeepSeekClient
+from ..provider import ProviderClient
 from ..tools.fs_tools import TOOL_SPECS, FileSystemTools
 
 log = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ _VERDICT = re.compile(
 class Validator:
     def __init__(
         self,
-        client: DeepSeekClient,
+        client: ProviderClient,
         library: PromptLibrary,
         tools: FileSystemTools,
     ):
