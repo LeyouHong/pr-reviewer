@@ -138,3 +138,131 @@ def prune_old_reports(number: int, keep: int, repo: str | None = None) -> int:
 def post_report(number: int, body: str, repo: str | None = None) -> None:
     scope = ["--repo", repo] if repo else []
     _gh("pr", "comment", str(number), *scope, "--body-file", "-", stdin=body)
+
+
+def post_inline_review(
+    number: int,
+    commit_sha: str,
+    body: str,
+    comments: list[dict],
+    repo: str | None = None,
+    event: str = "COMMENT",
+) -> None:
+    """Post a review with per-line comments in one call.
+
+    Uses the ``/pulls/{n}/reviews`` endpoint rather than one POST per comment:
+    a single review groups everything under one collapsible thread in the PR
+    UI and, more practically, races cleanly against a re-review — either the
+    whole batch lands or none of it does.
+
+    ``event`` stays ``COMMENT`` by default. Any auto-review that could
+    ``APPROVE`` or ``REQUEST_CHANGES`` on someone else's code would be a
+    social hazard we do not want the CLI to enable by accident.
+    """
+    if not commit_sha:
+        raise GitHubError(
+            "post_inline_review requires a head commit SHA to anchor the review"
+        )
+    slug = _repo_slug(repo)
+    payload = {
+        "commit_id": commit_sha,
+        "body": body,
+        "event": event,
+        "comments": comments,
+    }
+    _gh(
+        "api",
+        "-X",
+        "POST",
+        f"repos/{slug}/pulls/{number}/reviews",
+        "--input",
+        "-",
+        stdin=json.dumps(payload),
+    )
+
+
+# -- trigger words ---------------------------------------------------------
+
+# ``!review`` forces a re-review on the next scan cycle even if a fresh
+# report already exists. ``!do-not-review`` blocks all future scans — the
+# author or a maintainer is opting this PR out. Substring-with-word-boundary
+# match so a comment quoting "``!review``" as prose still triggers.
+_TRIGGER_REVIEW = "!review"
+_TRIGGER_SKIP = "!do-not-review"
+
+
+def _pr_issue_comments(number: int, repo: str | None = None) -> list[dict]:
+    slug = _repo_slug(repo)
+    raw = _gh(
+        "api",
+        f"repos/{slug}/issues/{number}/comments",
+        "--paginate",
+        "--jq",
+        ".[] | {id: .id, body: .body, created_at: .created_at, user_login: .user.login}",
+    )
+    out: list[dict] = []
+    for line in raw.splitlines():
+        if line.strip():
+            out.append(json.loads(line))
+    return out
+
+
+def trigger_marker(
+    comments: list[dict], since_iso: str | None = None
+) -> str | None:
+    """Return the most recent trigger marker in ``comments``, or ``None``.
+
+    ``!do-not-review`` always wins when it appears at all — an opt-out is a
+    property of the PR, not a state to be flipped back and forth. Otherwise
+    the newest ``!review`` newer than ``since_iso`` wins. Comments older than
+    ``since_iso`` are ignored (they were already acted on).
+    """
+    seen_review: str | None = None
+    for item in comments:
+        body = (item.get("body") or "").lower()
+        if _TRIGGER_SKIP in body:
+            return _TRIGGER_SKIP
+        if _TRIGGER_REVIEW in body:
+            created = item.get("created_at") or ""
+            if since_iso is None or created > since_iso:
+                seen_review = _TRIGGER_REVIEW
+    return seen_review
+
+
+def pr_trigger(
+    number: int, repo: str | None = None, since_iso: str | None = None
+) -> str | None:
+    return trigger_marker(_pr_issue_comments(number, repo), since_iso=since_iso)
+
+
+# -- scan discovery --------------------------------------------------------
+
+
+def list_open_prs(repo: str, target_branches: list[str] | None = None) -> list[dict]:
+    """Enumerate open PRs, optionally filtered to a set of base-branch globs.
+
+    fnmatch patterns cover the common shapes ("main", "release/*", "7.*"),
+    which is what the reference implementation's settings.json uses.
+    """
+    import fnmatch
+
+    raw = _gh(
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--json",
+        "number,title,baseRefName,headRefName,headRefOid,updatedAt,url",
+        "--limit",
+        "200",
+    )
+    prs = json.loads(raw or "[]")
+    if not target_branches:
+        return prs
+    return [
+        pr
+        for pr in prs
+        if any(fnmatch.fnmatch(pr.get("baseRefName") or "", pat) for pat in target_branches)
+    ]

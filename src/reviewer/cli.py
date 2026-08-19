@@ -14,6 +14,9 @@ from .benchmark.capture import capture
 from .benchmark.calibration import run_calibration
 from .benchmark.gold import format_worklist, label_run
 from .benchmark.runner import run_benchmark
+from .pipeline.inline import build_inline_review
+from .pipeline.scan import scan_repos
+from .settings import load_settings
 from .sources import github, local_git
 
 
@@ -45,6 +48,13 @@ def _common(parser: argparse.ArgumentParser) -> None:
              "judging the diff in isolation.",
     )
     parser.add_argument(
+        "--v2",
+        action="store_true",
+        help="Single-agent reviewer with tools (equivalent to --agentic --ensemble 1). "
+             "Cheaper than an ensemble and, per the reference implementation, "
+             "usually has a better false-positive rate — worth A/B'ing on your corpus.",
+    )
+    parser.add_argument(
         "--no-validate",
         action="store_true",
         help="Skip the qualification/validation pipeline (faster, noisier).",
@@ -60,13 +70,20 @@ def _common(parser: argparse.ArgumentParser) -> None:
 
 
 def _config_from(args: argparse.Namespace) -> Config:
+    # --v2 is a shorthand for the mode the reference implementation recommends
+    # once ensemble no longer earns its 3x cost. It maps to --agentic
+    # --ensemble 1 and, when the user set neither flag, wins the tie. An
+    # explicit --ensemble N alongside --v2 stays as N so the user's override is
+    # respected.
+    agentic = args.agentic or args.v2
+    ensemble = args.ensemble if args.ensemble is not None else (1 if args.v2 else None)
     return Config.from_env(
         repo_path=args.repo_path.resolve(),
         model=args.model,
         api_key=args.api_key,
         base_url=args.base_url,
-        agentic_review=True if args.agentic else None,
-        ensemble_size=args.ensemble,
+        agentic_review=True if agentic else None,
+        ensemble_size=ensemble,
         enable_validation=False if args.no_validate else None,
         semgrep_enabled=True if args.semgrep else None,
         max_files=args.max_files,
@@ -97,14 +114,14 @@ def cmd_review_diff(args: argparse.Namespace) -> int:
 
 def cmd_review_pr(args: argparse.Namespace) -> int:
     config = _config_from(args)
-    info = github.load_pull_request(args.number, args.repo)
+    info, _diff, head_sha = github.load_pull_request_raw(args.number, args.repo)
     if not info.changes:
         print("No reviewable changes.", file=sys.stderr)
         return 0
 
     pipeline = ReviewPipeline(config)
     review = pipeline.run(info)
-    markdown = pipeline.render(review, commit=os.environ.get("COMMIT_HASH", ""))
+    commit = os.environ.get("COMMIT_HASH", "")
 
     if args.post:
         pruned = github.prune_old_reports(
@@ -112,11 +129,49 @@ def cmd_review_pr(args: argparse.Namespace) -> int:
         )
         if pruned:
             print(f"pruned {pruned} stale report(s)", file=sys.stderr)
-        github.post_report(args.number, markdown, repo=args.repo)
-        print(f"posted review to PR #{args.number}", file=sys.stderr)
+        if args.inline:
+            payload = build_inline_review(review, commit=commit)
+            comments = [
+                {"path": c.path, "line": c.line, "side": c.side, "body": c.body}
+                for c in payload.comments
+            ]
+            github.post_inline_review(
+                args.number,
+                head_sha,
+                payload.body,
+                comments,
+                repo=args.repo,
+            )
+            print(
+                f"posted inline review to PR #{args.number} "
+                f"({len(comments)} inline, {len(payload.unmapped)} in body)",
+                file=sys.stderr,
+            )
+        else:
+            markdown = pipeline.render(review, commit=commit)
+            github.post_report(args.number, markdown, repo=args.repo)
+            print(f"posted review to PR #{args.number}", file=sys.stderr)
     else:
+        markdown = pipeline.render(review, commit=commit)
         _emit(markdown, args.output)
     return 1 if review.error_count else 0
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    settings = load_settings(args.settings)
+    if not settings.repositories:
+        print(f"No repositories configured in {args.settings}", file=sys.stderr)
+        return 0
+    config = _config_from(args)
+    results = scan_repos(settings, config, dry_run=args.dry_run)
+    reviewed = sum(1 for r in results if r.get("reviewed"))
+    skipped = len(results) - reviewed
+    print(
+        f"scan: reviewed {reviewed}, skipped {skipped} across "
+        f"{len(settings.repositories)} repo(s)",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def cmd_benchmark_capture(args: argparse.Namespace) -> int:
@@ -182,9 +237,33 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("number", type=int)
     pr.add_argument("--repo", default=None, help="owner/name; defaults to the cwd repo")
     pr.add_argument("--post", action="store_true", help="Post the report as a PR comment")
+    pr.add_argument(
+        "--inline",
+        action="store_true",
+        help="Post as a GitHub review with per-line comments instead of one "
+             "aggregated issue comment. Requires --post.",
+    )
     pr.add_argument("--max-reviews", type=int, default=5)
     _common(pr)
     pr.set_defaults(func=cmd_review_pr)
+
+    scan = sub.add_parser(
+        "scan",
+        help="Walk every repo in settings.json and review PRs that need attention",
+    )
+    scan.add_argument(
+        "--settings",
+        type=Path,
+        default=Path("settings.json"),
+        help="Path to the scan settings file.",
+    )
+    scan.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log the review/skip decision for each PR but do not post anything.",
+    )
+    _common(scan)
+    scan.set_defaults(func=cmd_scan)
 
     cap = sub.add_parser("benchmark-capture", help="Add PRs to a corpus for labelling")
     cap.add_argument("--repo", required=True, help="owner/name")

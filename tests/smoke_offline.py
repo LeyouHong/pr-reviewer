@@ -288,6 +288,140 @@ check("small file is one chunk", len(chunks) == 1, len(chunks))
 tiny_chunks = chunk_file_change(fc, budget=30)
 check("tiny budget forces a split", len(tiny_chunks) >= 2, len(tiny_chunks))
 
+print("\n[11b] inline review mapping")
+from reviewer.pipeline.inline import build_inline_review
+from reviewer.models import (
+    FileChangeReview as _FCR, PullRequestReview as _PR,
+    OverallRating as _OR,
+)
+_review = _PR(
+    cc_id="42",
+    file_reviews=[
+        _FCR(
+            filepath="src/api/orders.py",
+            diff="",
+            ai_comments=[
+                # Straight added-line finding → maps cleanly to RIGHT.
+                ReviewComment(
+                    line_numbers=[LineNumber(line_number=13, line_number_state=LineState.DIFF_ADDED)],
+                    severity=Severity.ERROR, category=Category.LOGIC,
+                    message="mutable default", criteria="python-mutable-default",
+                    suggestion="use None", rule="python-mutable-default",
+                    implementation_complexity=Complexity.LOW, context_needed=False,
+                ),
+                # Removed-line-only finding → maps to LEFT.
+                ReviewComment(
+                    line_numbers=[LineNumber(line_number=10, line_number_state=LineState.DIFF_REMOVED)],
+                    severity=Severity.WARNING, category=Category.LOGIC,
+                    message="removed guard", criteria="general-warning",
+                    suggestion="restore the guard", rule="general-warning",
+                    implementation_complexity=Complexity.LOW, context_needed=False,
+                ),
+                # Context-only citation → unmappable, must fall into the body.
+                ReviewComment(
+                    line_numbers=[LineNumber(line_number=11, line_number_state=LineState.FILE_CONTEXT)],
+                    severity=Severity.INFO, category=Category.MAINTAINABILITY,
+                    message="docstring missing", criteria="general-info",
+                    suggestion="add one", rule="general-info",
+                    implementation_complexity=Complexity.LOW, context_needed=False,
+                ),
+            ],
+            overall_rating=_OR.NEEDS_IMPROVEMENT,
+        ),
+    ],
+    overall_rating=_OR.NEEDS_IMPROVEMENT,
+    summary="Adds discount handling.",
+    total_files=1,
+    skipped_files=0,
+)
+inline = build_inline_review(_review, commit="abc123")
+check("body carries the fingerprint", inline.body.startswith("<!-- pr-reviewer"))
+check("two inline comments generated", len(inline.comments) == 2, len(inline.comments))
+right = [c for c in inline.comments if c.side == "RIGHT"]
+left = [c for c in inline.comments if c.side == "LEFT"]
+check("added-line comment anchors on RIGHT", right and right[0].line == 13, right)
+check("removed-line comment anchors on LEFT", left and left[0].line == 10, left)
+check("unmappable comment folds into body",
+      len(inline.unmapped) == 1 and "docstring missing" in inline.body, inline.unmapped)
+check("summary refers to inline count",
+      f"See the {len(inline.comments)} inline comment" in inline.body, inline.body[:200])
+
+print("\n[11c] scan settings + windows")
+import json as _json
+from datetime import datetime
+from reviewer.settings import load_settings, WindowConfig
+_tmp = Path("/tmp/pr-reviewer-smoke-settings.json")
+_tmp.write_text(_json.dumps({
+    "repositories": {
+        "acme/api": {"target-branches": ["main", "release/*"], "timerange": 604800}
+    },
+    "operation": {
+        "timezone": "UTC",
+        "hours": {
+            "active": {"start": "06:00", "end": "21:00", "max_files": 100},
+            "inactive": {"start": "21:00", "end": "06:00", "max_files": 500},
+        }
+    }
+}))
+_settings = load_settings(_tmp)
+check("repository parsed", len(_settings.repositories) == 1 and _settings.repositories[0].url == "acme/api")
+check("target branches parsed", _settings.repositories[0].target_branches == ["main", "release/*"])
+check("timerange parsed", _settings.repositories[0].timerange == 604800)
+active = _settings.operation.window_for(datetime(2026, 1, 1, 10, 0))
+check("noon lands in active window", active is not None and active.max_files == 100, active)
+inactive = _settings.operation.window_for(datetime(2026, 1, 1, 3, 0))
+check("3am lands in wrap-around inactive window",
+      inactive is not None and inactive.max_files == 500, inactive)
+midnight = _settings.operation.window_for(datetime(2026, 1, 1, 23, 30))
+check("late night still inside inactive window",
+      midnight is not None and midnight.max_files == 500, midnight)
+
+# Empty/partial config: the loader must not pretend a missing window is always-on.
+_tmp.write_text(_json.dumps({"repositories": {}, "operation": {}}))
+partial = load_settings(_tmp)
+check("empty windows return None", partial.operation.window_for(datetime(2026, 1, 1, 10, 0)) is None)
+_tmp.unlink()
+
+print("\n[11d] trigger word detection")
+from reviewer.sources.github import trigger_marker
+_comments = [
+    {"body": "Looks great, LGTM", "created_at": "2026-01-01T00:00:00Z"},
+    {"body": "please re-run when ready — !review", "created_at": "2026-01-02T00:00:00Z"},
+]
+check("bare !review recognised", trigger_marker(_comments) == "!review")
+_comments.append({"body": "!do-not-review — this is a WIP", "created_at": "2026-01-01T12:00:00Z"})
+check("!do-not-review wins over !review regardless of order",
+      trigger_marker(_comments) == "!do-not-review")
+check("older !review ignored when since_iso is in the future",
+      trigger_marker(_comments[:2], since_iso="2027-01-01T00:00:00Z") is None)
+
+# Trigger routing inside the scan decision.
+from reviewer.pipeline.scan import _should_review
+review_flag, reason = _should_review(
+    {"updatedAt": "2026-01-05T00:00:00Z"},
+    _comments,
+    reports=[],
+)
+check("do-not-review kills the review decision", not review_flag and "opted out" in reason, reason)
+
+_comments_ok = [{"body": "please !review", "created_at": "2026-01-05T00:00:00Z"}]
+old_report = [{"body": "old", "created_at": "2026-01-01T00:00:00Z"}]
+review_flag, reason = _should_review(
+    {"updatedAt": "2026-01-10T00:00:00Z"},
+    _comments_ok,
+    old_report,
+)
+check("!review overrides an existing stale report", review_flag and "!review" in reason, reason)
+
+fresh_report = [{"body": "fresh", "created_at": "2026-01-15T00:00:00Z"}]
+review_flag, reason = _should_review(
+    {"updatedAt": "2026-01-10T00:00:00Z"},
+    [{"body": "just a note", "created_at": "2026-01-11T00:00:00Z"}],
+    fresh_report,
+)
+check("fresh report suppresses a normal-comment update",
+      not review_flag and "already reviewed" in reason, reason)
+
 print("\n[12] model round-trip")
 review = LLMFileChangeReview(
     overall_rating=OverallRating.NEEDS_IMPROVEMENT, summary="s", comments=[mk(13)],
