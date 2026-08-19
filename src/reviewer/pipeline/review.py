@@ -24,7 +24,8 @@ from ..models import (
 from ..policy import PolicyRouter
 from ..prompt import PromptLibrary, file_changes_block, render
 from ..provider import ProviderClient
-from ..tools.fs_tools import TOOL_SPECS, FileSystemTools
+from ..tools.fs_tools import FileSystemTools
+from ..tools.researcher import Researcher, build_dispatch, extended_tool_specs
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +47,12 @@ class FileReviewer:
         self._router = router
         self._config = config
         self._tools = tools or FileSystemTools(config.repo_path)
+        # The researcher is only reached when the outer reviewer calls the
+        # ``research_codebase`` tool, so it costs nothing on non-agentic paths
+        # even though it is constructed eagerly.
+        self._researcher = Researcher(client, library, self._tools)
+        self._agent_tool_specs = extended_tool_specs()
+        self._agent_dispatch = build_dispatch(self._tools, self._researcher)
 
     # -- public -----------------------------------------------------------
 
@@ -143,8 +150,8 @@ class FileReviewer:
             return self._client.run_agent_structured(
                 prompt,
                 LLMFileChangeReview,
-                tool_specs=TOOL_SPECS,
-                dispatch=self._tools.dispatch,
+                tool_specs=self._agent_tool_specs,
+                dispatch=self._agent_dispatch,
                 result_tool=_TOOL_NAME,
                 result_description=_TOOL_DESC,
                 max_turns=constants.MAX_TURNS_REVIEW,

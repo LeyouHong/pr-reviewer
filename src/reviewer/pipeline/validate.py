@@ -9,7 +9,8 @@ from .. import constants
 from ..models import FileChange, ReviewComment, ValidateVerdict
 from ..prompt import PromptLibrary, render
 from ..provider import ProviderClient
-from ..tools.fs_tools import TOOL_SPECS, FileSystemTools
+from ..tools.fs_tools import FileSystemTools
+from ..tools.researcher import Researcher, build_dispatch, extended_tool_specs
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ class Validator:
         self._client = client
         self._library = library
         self._tools = tools
+        self._researcher = Researcher(client, library, tools)
+        self._tool_specs = extended_tool_specs()
+        self._dispatch = build_dispatch(tools, self._researcher)
 
     def validate(
         self,
@@ -55,8 +59,8 @@ class Validator:
         try:
             result = self._client.run_agent(
                 prompt,
-                tool_specs=TOOL_SPECS,
-                dispatch=self._tools.dispatch,
+                tool_specs=self._tool_specs,
+                dispatch=self._dispatch,
                 max_turns=constants.MAX_TURNS_VALIDATE,
                 label=f"validate:{change.filepath}",
             )

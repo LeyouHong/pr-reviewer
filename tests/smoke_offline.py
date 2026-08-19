@@ -288,6 +288,94 @@ check("small file is one chunk", len(chunks) == 1, len(chunks))
 tiny_chunks = chunk_file_change(fc, budget=30)
 check("tiny budget forces a split", len(tiny_chunks) >= 2, len(tiny_chunks))
 
+print("\n[11a] research_codebase composition + recursion guard")
+from reviewer.tools.fs_tools import TOOL_SPECS, FileSystemTools
+from reviewer.tools.researcher import (
+    RESEARCH_TOOL_SPEC, Researcher, build_dispatch, extended_tool_specs,
+)
+from reviewer.provider.client import AgentEvent, AgentRunResult
+
+_names = [t["function"]["name"] for t in extended_tool_specs()]
+check("extended spec exposes research_codebase", "research_codebase" in _names, _names)
+check("base tool names preserved in extended spec",
+      set(t["function"]["name"] for t in TOOL_SPECS).issubset(_names), _names)
+
+# Stub client that records what the inner agent was given, then returns
+# a canned answer. This is what verifies "the inner loop cannot recurse".
+class _StubClient:
+    def __init__(self, final="Definition at foo.py:10.", turn_limit=False, raise_exc=None):
+        self.calls = []
+        self._final = final
+        self._turn_limit = turn_limit
+        self._raise_exc = raise_exc
+
+    def run_agent(self, prompt, *, tool_specs, dispatch, max_turns, label, **_):
+        self.calls.append({
+            "prompt": prompt, "tool_specs": tool_specs, "max_turns": max_turns,
+            "label": label,
+        })
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return AgentRunResult(
+            final_output=self._final,
+            events=[AgentEvent(kind="tool_call", name="read_file")]
+                if not self._turn_limit else [],
+            turns_used=max_turns,
+            turn_limit_reached=self._turn_limit,
+        )
+
+lib = PromptLibrary(res)  # from Section 8
+fs = FileSystemTools(Path(__file__).resolve().parents[1])
+
+client_ok = _StubClient()
+researcher = Researcher(client_ok, lib, fs)
+answer = researcher.research("Where is `total` defined?")
+check("researcher returns the model's prose", "foo.py:10" in answer, answer)
+
+inner_specs = client_ok.calls[0]["tool_specs"]
+inner_names = [t["function"]["name"] for t in inner_specs]
+check("inner loop excludes research_codebase (no recursion)",
+      "research_codebase" not in inner_names, inner_names)
+check("inner loop retains base fs tools",
+      set(t["function"]["name"] for t in TOOL_SPECS) == set(inner_names), inner_names)
+
+# Turn-limit and exception paths must return actionable strings, not raise.
+client_stuck = _StubClient(turn_limit=True)
+stuck = Researcher(client_stuck, lib, fs).research("Impossible question")
+check("turn-limit returns an ERROR string", stuck.startswith("ERROR: research hit"), stuck)
+
+client_boom = _StubClient(raise_exc=RuntimeError("network down"))
+boom = Researcher(client_boom, lib, fs).research("anything")
+check("exception is caught and returned as data",
+      boom.startswith("ERROR: research call failed"), boom)
+
+empty = Researcher(client_ok, lib, fs).research("   ")
+check("empty question rejected without a call", empty.startswith("ERROR: research_codebase called with an empty"), empty)
+
+# Composed dispatch: research_codebase routes to the researcher; other names
+# fall through to fs_tools. Use a stub-fs to observe the fall-through.
+class _StubFs:
+    def __init__(self):
+        self.saw = None
+    def dispatch(self, name, args):
+        self.saw = (name, args)
+        return "fs-handled"
+
+stub_fs = _StubFs()
+class _StubResearcher:
+    def research(self, question, focus_paths=None):
+        return f"research-handled q={question} focus={focus_paths}"
+
+dispatch = build_dispatch(stub_fs, _StubResearcher())
+check("research_codebase routes to researcher",
+      "research-handled" in dispatch("research_codebase",
+                                     {"question": "Q", "focus_paths": ["a.py"]}))
+check("focus_paths passed through",
+      "focus=['a.py']" in dispatch("research_codebase",
+                                     {"question": "Q", "focus_paths": ["a.py"]}))
+check("read_file falls through to fs_tools",
+      dispatch("read_file", {"path": "x"}) == "fs-handled" and stub_fs.saw[0] == "read_file")
+
 print("\n[11b] inline review mapping")
 from reviewer.pipeline.inline import build_inline_review
 from reviewer.models import (
