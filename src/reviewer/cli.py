@@ -38,6 +38,12 @@ def _common(parser: argparse.ArgumentParser) -> None:
         help="Number of independent reviewers per file; >1 enables majority rule.",
     )
     parser.add_argument(
+        "--agentic",
+        action="store_true",
+        help="Let the reviewer read the repository while reviewing, instead of "
+             "judging the diff in isolation.",
+    )
+    parser.add_argument(
         "--no-validate",
         action="store_true",
         help="Skip the qualification/validation pipeline (faster, noisier).",
@@ -53,6 +59,7 @@ def _config_from(args: argparse.Namespace) -> Config:
         model=args.model,
         api_key=args.api_key,
         base_url=args.base_url,
+        agentic_review=True if args.agentic else None,
         ensemble_size=args.ensemble,
         enable_validation=False if args.no_validate else None,
         max_files=args.max_files,

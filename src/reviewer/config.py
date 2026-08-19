@@ -32,6 +32,10 @@ class Config:
     resources_dir: Path = field(default_factory=lambda: _default_resources())
 
     # Pipeline switches
+    # Give the reviewer read-only tools and let it investigate. Costs more per
+    # file, but a non-agentic reviewer sees one diff and nothing else, so every
+    # defect living in the seam between two files is out of its reach.
+    agentic_review: bool = False
     ensemble_size: int = constants.ENSEMBLE_SIZE
     enable_validation: bool = True
     max_files: int = 100

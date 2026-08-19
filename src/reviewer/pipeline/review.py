@@ -24,6 +24,7 @@ from ..models import (
 from ..policy import PolicyRouter
 from ..prompt import PromptLibrary, file_changes_block, render
 from ..provider import DeepSeekClient
+from ..tools.fs_tools import TOOL_SPECS, FileSystemTools
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +39,13 @@ class FileReviewer:
         library: PromptLibrary,
         router: PolicyRouter,
         config: Config,
+        tools: FileSystemTools | None = None,
     ):
         self._client = client
         self._library = library
         self._router = router
         self._config = config
+        self._tools = tools or FileSystemTools(config.repo_path)
 
     # -- public -----------------------------------------------------------
 
@@ -65,8 +68,13 @@ class FileReviewer:
 
         for index, hunks in enumerate(chunks):
             rendered = render_diff(change, hunks)
+            task = (
+                "code_review_agent"
+                if self._config.agentic_review
+                else "code_review_prompt"
+            )
             prompt = render(
-                self._library.task("code_review_prompt"),
+                self._library.task(task),
                 role_prompt=self._library.role("reviewer"),
                 mr_project=info.repository,
                 mr_title=info.cc_title,
@@ -131,6 +139,17 @@ class FileReviewer:
         return self._aggregate(reviews, change, info)
 
     def _one_review(self, prompt: str, label: str) -> LLMFileChangeReview:
+        if self._config.agentic_review:
+            return self._client.run_agent_structured(
+                prompt,
+                LLMFileChangeReview,
+                tool_specs=TOOL_SPECS,
+                dispatch=self._tools.dispatch,
+                result_tool=_TOOL_NAME,
+                result_description=_TOOL_DESC,
+                max_turns=constants.MAX_TURNS_REVIEW,
+                label=label,
+            )
         return self._client.complete_structured(
             prompt,
             LLMFileChangeReview,

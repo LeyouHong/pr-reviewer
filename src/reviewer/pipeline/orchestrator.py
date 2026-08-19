@@ -37,7 +37,9 @@ class ReviewPipeline:
         self.client = DeepSeekClient(config)
         self.tools = FileSystemTools(config.repo_path)
 
-        self.reviewer = FileReviewer(self.client, self.library, self.router, config)
+        self.reviewer = FileReviewer(
+            self.client, self.library, self.router, config, self.tools
+        )
         self.qualifier = Qualifier(self.client, self.library)
         self.validator = Validator(self.client, self.library, self.tools)
         self.summarizer = Summarizer(self.client, self.library)

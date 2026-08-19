@@ -140,6 +140,114 @@ class DeepSeekClient:
 
         return with_retries(_call, label=label)
 
+    def run_agent_structured(
+        self,
+        prompt: str,
+        schema: type[M],
+        *,
+        tool_specs: list[dict[str, Any]],
+        dispatch: Callable[[str, dict[str, Any]], str],
+        result_tool: str,
+        result_description: str,
+        max_turns: int = constants.MAX_TURNS_REVIEW,
+        temperature: float | None = None,
+        label: str = "agent_structured",
+    ) -> M:
+        """Explore with tools, then answer by calling a strict result tool.
+
+        The result model is published alongside the read-only tools, so the
+        model ends the loop by calling it rather than by falling out into prose.
+        That keeps exploration and structured output in one conversation: no
+        second summarising call, and the schema stays grammar-enforced.
+        """
+        result = build_strict_tool(schema, result_tool, result_description)
+        tools = [*tool_specs, result]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        temp = self._config.temperature if temperature is None else temperature
+
+        def _run() -> M:
+            del messages[1:]  # a retry restarts exploration from the prompt
+            for turn in range(1, max_turns + 1):
+
+                def _call() -> Any:
+                    return self._client.chat.completions.create(
+                        model=self._config.model,
+                        messages=messages,
+                        tools=tools,
+                        temperature=temp,
+                        extra_body=self._extra_body,
+                    )
+
+                resp = with_retries(_call, label=f"{label}:turn{turn}")
+                message = resp.choices[0].message
+                calls = message.tool_calls or []
+
+                if not calls:
+                    # Prose instead of the result tool: name the omission rather
+                    # than accepting an unstructured answer.
+                    messages.append(
+                        {"role": "assistant", "content": message.content or ""}
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"Call the `{result_tool}` function now with "
+                            "your review. Do not answer in prose.",
+                        }
+                    )
+                    continue
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": [
+                            {
+                                "id": c.id,
+                                "type": "function",
+                                "function": {
+                                    "name": c.function.name,
+                                    "arguments": c.function.arguments,
+                                },
+                            }
+                            for c in calls
+                        ],
+                    }
+                )
+
+                for call in calls:
+                    if call.function.name == result_tool:
+                        raw = call.function.arguments or ""
+                        if not raw.strip():
+                            raise DegenerateOutputError(f"{label}: empty result args")
+                        try:
+                            payload = loads_with_recovery(raw)
+                        except json.JSONDecodeError as exc:
+                            raise ContentError(f"{label}: unparseable result") from exc
+                        return clamp_and_revalidate(payload, schema)
+
+                    try:
+                        args = json.loads(call.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    try:
+                        output = dispatch(call.function.name, args)
+                    except Exception as exc:  # tool errors are data
+                        output = f"ERROR: {exc}"
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": output[: constants.TOOL_OUTPUT_CHAR_LIMIT],
+                        }
+                    )
+
+            raise DegenerateOutputError(
+                f"{label}: hit the {max_turns}-turn limit without calling {result_tool}"
+            )
+
+        return with_retries(_run, label=label)
+
     # -- agentic loop -----------------------------------------------------
 
     def run_agent(

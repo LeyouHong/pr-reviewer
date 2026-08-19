@@ -85,6 +85,39 @@ check("last-line verdict contract", "Verdict: TRUE_POSITIVE" in result.final_out
 print(f"        tools called: {[e.name for e in result.events if e.kind=='tool_call']}"
       f"  turns={result.turns_used}")
 
+print("\n[4] agentic reviewer: explore, then end on the result tool")
+from reviewer.models import LLMFileChangeReview as _R
+root = Path(__file__).resolve().parents[1]
+agent_tools = FileSystemTools(root)
+_calls = []
+
+
+def _recording_dispatch(name, args):
+    _calls.append(name)
+    return agent_tools.dispatch(name, args)
+
+review2 = client.run_agent_structured(
+    "You are a code review assistant. Determine which severity values the "
+    "reviewer schema allows by reading `resources/rules/general.md` in this "
+    "repository, then submit a review of the diff below.\n\n"
+    "````file-diff path=/x.py\n"
+    "       |      1 +def total(items, discounts=[]):\n"
+    "       |      2 +    return sum(i.price for i in items)\n"
+    "````\n\n"
+    "Report one error-severity finding on line 1 for the mutable default.",
+    _R, tool_specs=TOOL_SPECS, dispatch=_recording_dispatch,
+    result_tool="submit_file_review", result_description="Submit the review.",
+    max_turns=10, label="smoke-agentic-review")
+check("read the repository before answering", bool(_calls), _calls)
+check("actually opened a file", "read_file" in _calls, _calls)
+check("ended on the structured result tool", isinstance(review2, _R))
+check("schema honoured through the agentic path",
+      review2.overall_rating.value in {"excellent","good","needs_improvement","poor"})
+check("produced a finding", len(review2.comments) >= 1, len(review2.comments))
+for c in review2.comments[:2]:
+    print(f"        [{c.severity.value}] L{[l.line_number for l in c.line_numbers]} {c.message[:60]}")
+print(f"        tools called: {_calls}")
+
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {FAILURES}")
