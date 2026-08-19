@@ -32,6 +32,12 @@ TOOL_OUTPUT_CHAR_LIMIT = 40_000
 # files rather than a routine step.
 CHUNK_TOKEN_BUDGET = 120_000
 
+# Per-request ceiling. Generous for a long review, but far below the old 600s:
+# httpx times out on a monotonic clock that does not advance while the host
+# sleeps, so an over-long ceiling turns a laptop suspend into an indefinite hang
+# on a dead socket rather than a retry.
+REQUEST_TIMEOUT_S = 180.0
+
 # --- Retries -------------------------------------------------------------
 
 MAX_PARSE_RETRIES = 3

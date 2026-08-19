@@ -17,6 +17,7 @@ from ..models import (
     QualifyVerdict,
     ReviewComment,
     Severity,
+    ValuableDecision,
 )
 from ..diffing.scope import scope_section
 from ..prompt import PromptLibrary, render
@@ -91,12 +92,10 @@ def heuristic_verdict(
 
     Order matters: the cheapest and most certain discards run first, and
     anything that merely looks uncertain is routed to validation rather than
-    resolved here.
+    resolved here. Every severity runs the discard checks — an info comment
+    that narrates a fix or restates itself is exactly as useless as an error
+    one, and exempting info from these checks let that noise through.
     """
-    if comment.severity is Severity.INFO:
-        # Info comments are advisory; they never justify an agentic call.
-        return QualifyVerdict.PASS
-
     if not any(ln.line_number in change.added_lines for ln in comment.line_numbers):
         return QualifyVerdict.DISCARD
 
@@ -117,11 +116,14 @@ def heuristic_verdict(
     if _suggestion_restates_message(comment):
         return QualifyVerdict.DISCARD
 
-    if any(p.search(combined) for p in _UNCERTAINTY_PATTERNS):
-        return QualifyVerdict.VALIDATE
-
-    if any(p.search(combined) for p in _CROSS_FILE_PATTERNS):
-        return QualifyVerdict.VALIDATE
+    # Only error and warning earn an agentic validation pass. An info comment is
+    # not worth a tool-using agent no matter how uncertain its wording; it is
+    # judged on actionability instead (see Qualifier.qualify).
+    if comment.severity is not Severity.INFO:
+        if any(p.search(combined) for p in _UNCERTAINTY_PATTERNS):
+            return QualifyVerdict.VALIDATE
+        if any(p.search(combined) for p in _CROSS_FILE_PATTERNS):
+            return QualifyVerdict.VALIDATE
 
     return None
 
@@ -138,6 +140,9 @@ class Qualifier:
         if decided is not None:
             log.debug("qualify(heuristic)=%s for %s", decided.value, change.filepath)
             return decided
+
+        if comment.severity is Severity.INFO:
+            return self._judge_value(comment, change)
 
         prompt = render(
             self._library.task("qualify_issue"),
@@ -159,6 +164,41 @@ class Qualifier:
             return QualifyVerdict.VALIDATE
 
         return _parse_keyword(text)
+
+    def _judge_value(
+        self, comment: ReviewComment, change: FileChange
+    ) -> QualifyVerdict:
+        """Keep an info comment only if a maintainer would act on it.
+
+        Info findings dominated the first benchmark run: 33 of 73 reported
+        comments, 32 of them false positives. They are cheap to produce and
+        cheap to judge, so they get one text call against the actionability
+        criteria rather than unconditional retention.
+        """
+        prompt = render(
+            self._library.task("benchmark_gold_valuable"),
+            filepath=change.filepath,
+            severity=comment.severity.value,
+            message=comment.message,
+            suggestion=comment.suggestion or "(none provided)",
+        )
+        try:
+            decision = self._client.complete_structured(
+                prompt,
+                ValuableDecision,
+                tool_name="submit_valuable",
+                tool_description="Submit the actionability decision.",
+                label=f"value:{change.filepath}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Showing a weak info comment costs less than hiding a real one.
+            log.warning("value gate failed, retaining info comment: %s", exc)
+            return QualifyVerdict.PASS
+
+        if not decision.valuable:
+            log.info("info discarded as not actionable: %s", comment.message[:70])
+            return QualifyVerdict.DISCARD
+        return QualifyVerdict.PASS
 
 
 def _parse_keyword(text: str) -> QualifyVerdict:

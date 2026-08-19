@@ -120,7 +120,7 @@ def cmd_benchmark_capture(args: argparse.Namespace) -> int:
 
 def cmd_benchmark_run(args: argparse.Namespace) -> int:
     config = _config_from(args)
-    report = run_benchmark(config, args.corpus, args.run_dir)
+    report = run_benchmark(config, args.corpus, args.run_dir, args.checkout_repo)
     _emit(report, args.output)
     return 0
 
@@ -167,6 +167,14 @@ def main(argv: list[str] | None = None) -> int:
     bench = sub.add_parser("benchmark-run", help="Score the reviewer against a corpus")
     bench.add_argument("--corpus", type=Path, default=Path("corpus.json"))
     bench.add_argument("--run-dir", type=Path, default=Path("benchmark_runs/latest"))
+    bench.add_argument(
+        "--checkout-repo",
+        type=Path,
+        default=None,
+        help="Clone of the reviewed repository. Each PR is checked out at its "
+             "pin_commit in a worktree so the validator reads the code the labels "
+             "were written against. Required for a comparable validated run.",
+    )
     _common(bench)
     bench.set_defaults(func=cmd_benchmark_run)
 

@@ -105,7 +105,17 @@ check("names added ranges", "13-17" in sec, sec)
 check("reports cited-inside", "Cited lines that this diff added: [13]" in sec, sec)
 
 print("\n[5] qualification heuristics (real regex set)")
-check("info auto-passes", heuristic_verdict(mk(13, sev=Severity.INFO), fc) is QualifyVerdict.PASS)
+# Info no longer bypasses the discard checks: a narrated fix is as useless at
+# info severity as at error severity.
+info_narration = mk(13, sev=Severity.INFO, msg="The fix correctly handles the shared default.", sugg="None needed.")
+check("info fix-narration is discarded, not auto-passed", heuristic_verdict(info_narration, fc) is QualifyVerdict.DISCARD)
+check("info outside the diff is discarded", heuristic_verdict(mk(9999, sev=Severity.INFO), fc) is QualifyVerdict.DISCARD)
+info_uncertain = mk(13, sev=Severity.INFO, msg="This might break callers of total() elsewhere.", sugg="Check them.")
+check("info never routes to agentic validation", heuristic_verdict(info_uncertain, fc) is None, "info must reach the value gate, not the validator")
+warn_uncertain = mk(13, sev=Severity.WARNING, msg="This might break callers of total() elsewhere.", sugg="Check them.")
+check("warning with the same text still routes to validate", heuristic_verdict(warn_uncertain, fc) is QualifyVerdict.VALIDATE)
+info_plain = mk(13, sev=Severity.INFO, msg="Function lacks a docstring.", sugg="Add one describing the discount semantics.")
+check("ordinary info defers to the value gate", heuristic_verdict(info_plain, fc) is None)
 check("out-of-diff discarded", heuristic_verdict(mk(9999), fc) is QualifyVerdict.DISCARD)
 
 narration = mk(13, msg="The previous code omitted the guard; the fix correctly handles it.", sugg="No change needed.")

@@ -229,6 +229,18 @@ class QualifyVerdict(str, Enum):
     PASS = "pass"
 
 
+class ValuableDecision(BaseModel):
+    """Would a maintainer act on this finding?
+
+    Applied to info-severity comments, which are too cheap to justify an
+    agentic validation pass but too numerous to retain unconditionally.
+    Reasoning first so the model works the question before committing.
+    """
+
+    reasoning: str
+    valuable: bool
+
+
 class ValidateVerdict(str, Enum):
     TRUE_POSITIVE = "TRUE_POSITIVE"
     FALSE_POSITIVE = "FALSE_POSITIVE"

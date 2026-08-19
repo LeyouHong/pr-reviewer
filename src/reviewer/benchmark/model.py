@@ -11,6 +11,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from ..models import ValuableDecision  # re-exported for benchmark callers
+
 
 class GroundTruthIssue(BaseModel):
     """One root cause at one code site that a maintainer fixes with one commit.
@@ -87,11 +89,6 @@ class MatchDecision(BaseModel):
     matched_gt_id: Optional[str] = None
 
 
-class ValuableDecision(BaseModel):
-    reasoning: str
-    valuable: bool
-
-
 class Score(BaseModel):
     true_positives: int = 0
     false_positives: int = 0
@@ -111,3 +108,5 @@ class Score(BaseModel):
     def f1(self) -> float:
         p, r = self.precision, self.recall
         return 2 * p * r / (p + r) if (p + r) else 0.0
+
+__all__ = [n for n in dir() if not n.startswith('_')]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from ..config import Config
@@ -17,6 +18,7 @@ from ..models import CodeChangeInfo
 from ..pipeline.orchestrator import ReviewPipeline
 from .matcher import MATCHER_VERSION, Matcher
 from .model import Corpus, CorpusPr, PrPart, RawFinding
+from .worktree import WorktreePool
 from .scoring import format_report, score_parts
 
 log = logging.getLogger(__name__)
@@ -42,7 +44,12 @@ def _to_info(pr: CorpusPr) -> CodeChangeInfo:
     )
 
 
-def run_benchmark(config: Config, corpus_path: Path, run_dir: Path) -> str:
+def run_benchmark(
+    config: Config,
+    corpus_path: Path,
+    run_dir: Path,
+    checkout_repo: Path | None = None,
+) -> str:
     corpus = Corpus.model_validate_json(corpus_path.read_text(encoding="utf-8"))
     labelled = [pr for pr in corpus.prs if pr.labelled]
     if not labelled:
@@ -52,20 +59,45 @@ def run_benchmark(config: Config, corpus_path: Path, run_dir: Path) -> str:
         )
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    pipeline = ReviewPipeline(config)
-    matcher = Matcher(pipeline.client, pipeline.library)
 
+    if config.enable_validation and checkout_repo is None:
+        log.warning(
+            "validation is on but no --checkout-repo was given: the validator will "
+            "read %s, which is not pinned to each PR's commit. Precision from this "
+            "run is not comparable to a pinned one.",
+            config.repo_path,
+        )
+
+    pool = (
+        WorktreePool(checkout_repo, run_dir / "worktrees")
+        if checkout_repo is not None
+        else None
+    )
     parts: list[PrPart] = []
-    for pr in labelled:
-        path = _part_path(run_dir, pr.id)
-        if path.exists():
-            log.info("resuming: %s already scored", pr.id)
-            parts.append(PrPart.model_validate_json(path.read_text(encoding="utf-8")))
-            continue
+    try:
+        matcher_pipeline = ReviewPipeline(config)
+        matcher = Matcher(matcher_pipeline.client, matcher_pipeline.library)
 
-        part = _score_one(pipeline, matcher, pr)
-        path.write_text(part.model_dump_json(indent=2), encoding="utf-8")
-        parts.append(part)
+        for pr in labelled:
+            path = _part_path(run_dir, pr.id)
+            if path.exists():
+                log.info("resuming: %s already scored", pr.id)
+                parts.append(PrPart.model_validate_json(path.read_text(encoding="utf-8")))
+                continue
+
+            pipeline = matcher_pipeline
+            if pool is not None:
+                # A pipeline per PR, because repo_path is what roots the
+                # validator's file tools.
+                pinned = replace(config, repo_path=pool.checkout(pr.id, pr.pin_commit))
+                pipeline = ReviewPipeline(pinned)
+
+            part = _score_one(pipeline, matcher, pr)
+            path.write_text(part.model_dump_json(indent=2), encoding="utf-8")
+            parts.append(part)
+    finally:
+        if pool is not None:
+            pool.cleanup()
 
     failed = sum(1 for p in parts if p.failed)
     if parts and failed / len(parts) > MAX_FAILED_FRACTION:
@@ -84,6 +116,7 @@ def run_benchmark(config: Config, corpus_path: Path, run_dir: Path) -> str:
                 "model": config.model,
                 "ensemble_size": config.ensemble_size,
                 "enable_validation": config.enable_validation,
+                "pinned_checkouts": checkout_repo is not None,
                 "matcher_version": MATCHER_VERSION,
             },
             indent=2,

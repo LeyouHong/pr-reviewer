@@ -59,7 +59,7 @@ class DeepSeekClient:
         self._client = OpenAI(
             api_key=config.require_api_key(),
             base_url=config.base_url,
-            timeout=600.0,
+            timeout=constants.REQUEST_TIMEOUT_S,
             max_retries=0,  # retries are owned by provider.errors
         )
 
