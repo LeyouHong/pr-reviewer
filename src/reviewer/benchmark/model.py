@@ -90,9 +90,21 @@ class MatchDecision(BaseModel):
 
 
 class Score(BaseModel):
+    """Precision counts findings; recall counts known bugs.
+
+    The two are deliberately separate counters. Recall was once computed as
+    ``true_positives / (true_positives + missed)``, which puts findings in the
+    numerator and a mix of findings and bugs in the denominator: reporting one
+    real bug twice inflated it. That made a run that merely stopped duplicating
+    itself look like a regression.
+    """
+
+    # Finding-side, for precision.
     true_positives: int = 0
     false_positives: int = 0
-    false_negatives: int = 0
+    # Bug-side, for recall. A bug counts once no matter how often it is found.
+    recalled: int = 0
+    ground_truth: int = 0
 
     @property
     def precision(self) -> float:
@@ -101,8 +113,7 @@ class Score(BaseModel):
 
     @property
     def recall(self) -> float:
-        denom = self.true_positives + self.false_negatives
-        return self.true_positives / denom if denom else 0.0
+        return self.recalled / self.ground_truth if self.ground_truth else 0.0
 
     @property
     def f1(self) -> float:

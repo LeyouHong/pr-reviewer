@@ -59,8 +59,8 @@ def score_parts(
 
         for issue in part.ground_truth:
             hit = issue.id in matched_ids
-            if not hit:
-                overall.false_negatives += 1
+            overall.recalled += int(hit)
+            overall.ground_truth += 1
             difficulty = "cross-file" if issue.requires_exploration else "diff-only"
             by_difficulty[difficulty].total += 1
             by_difficulty[difficulty].found += int(hit)
@@ -95,9 +95,10 @@ def format_report(
         f"| precision | {overall.precision:.3f} |",
         f"| recall | {overall.recall:.3f} |",
         f"| F1 | {overall.f1:.3f} |",
-        f"| true positives | {overall.true_positives} |",
-        f"| false positives | {overall.false_positives} |",
-        f"| missed bugs | {overall.false_negatives} |",
+        f"| findings that matched a known bug | {overall.true_positives} |",
+        f"| findings that matched nothing | {overall.false_positives} |",
+        f"| known bugs found | {overall.recalled} / {overall.ground_truth} |",
+        f"| known bugs missed | {overall.ground_truth - overall.recalled} |",
         "",
         "## Precision by reported severity",
         "",

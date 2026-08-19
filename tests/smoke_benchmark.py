@@ -31,10 +31,25 @@ overall, per_sev, by_diff, by_value = score_parts([p1, p2])
 
 check("true positives counted per finding", overall.true_positives == 3, overall.true_positives)
 check("false positives counted", overall.false_positives == 2, overall.false_positives)
-check("duplicate hit does not double-credit recall", overall.false_negatives == 1, overall.false_negatives)
-check("precision", abs(overall.precision - 0.6) < 1e-9, overall.precision)
-check("recall", abs(overall.recall - 0.75) < 1e-9, overall.recall)
-check("f1", abs(overall.f1 - (2*0.6*0.75)/(0.6+0.75)) < 1e-9, overall.f1)
+check("known bugs counted once each", overall.ground_truth == 3, overall.ground_truth)
+check("duplicate hit does not double-credit recall", overall.recalled == 2, overall.recalled)
+check("precision counts findings", abs(overall.precision - 0.6) < 1e-9, overall.precision)
+check("recall counts bugs, not findings", abs(overall.recall - 2/3) < 1e-9, overall.recall)
+check("f1", abs(overall.f1 - (2*0.6*(2/3))/(0.6+2/3)) < 1e-9, overall.f1)
+
+# The regression this replaced: a run that stops duplicating a hit keeps the
+# same recall instead of appearing to lose ground.
+dedup = PrPart(pr_id="r#1b", matcher_version="binary-v1",
+               ground_truth=[gt("1", False, "p1"), gt("2", True, "p2"), gt("3", True, "p1")],
+               findings=[sf("error", "1"), sf("warning", "2"), sf("info", None)])
+o_dedup, *_ = score_parts([dedup, p2])
+check("dropping a duplicate finding does not change recall",
+      abs(o_dedup.recall - overall.recall) < 1e-9, (o_dedup.recall, overall.recall))
+# Precision intentionally still counts findings: two comments about one real
+# bug are both real to the developer reading them, so removing one lowers the
+# numerator. Only recall is bug-scoped.
+check("dropping a duplicate true positive lowers precision",
+      o_dedup.precision < overall.precision, (o_dedup.precision, overall.precision))
 check("per-severity error precision", per_sev["error"].precision == 1.0, per_sev["error"].precision)
 check("per-severity info precision", per_sev["info"].precision == 0.0, per_sev["info"].precision)
 
@@ -55,10 +70,12 @@ except ValueError:
 failed = PrPart(pr_id="r#4", matcher_version="binary-v1", failed=True, error="boom")
 o2, *_ = score_parts([p1, failed])
 check("failed parts excluded from scoring", o2.true_positives == 3, o2.true_positives)
+check("failed parts contribute no ground truth", o2.ground_truth == 3, o2.ground_truth)
 
 print("\n[report]")
 report = format_report(overall, per_sev, by_diff, by_value, [p1, p2, failed])
 check("report has precision row", "| precision |" in report)
+check("report separates bugs from findings", "known bugs found" in report and "findings that matched" in report)
 check("report lists failures", "`r#4`: boom" in report)
 check("report shows difficulty buckets", "Recall by difficulty" in report)
 check("report counts clean PRs", "deliberately clean" in report)
