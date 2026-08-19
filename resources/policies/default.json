@@ -1,0 +1,85 @@
+{
+  "default": {
+    "exclude_patterns": [
+      "/vendor/",
+      "/generated/",
+      "/node_modules/",
+      "/testdata/"
+    ],
+    "policies": {
+      "general": {
+        "rules": [
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*"
+          }
+        ],
+        "apply_prompt": "/rules/general.md"
+      },
+      "python": {
+        "rules": [
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.py"
+          }
+        ],
+        "apply_prompt": "/rules/language_rules/python.md"
+      },
+      "typescript": {
+        "rules": [
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.ts"
+          },
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.tsx"
+          },
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.js"
+          },
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.jsx"
+          },
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.mjs"
+          },
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.cjs"
+          },
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.mts"
+          },
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.cts"
+          }
+        ],
+        "apply_prompt": "/rules/language_rules/typescript.md"
+      },
+      "java": {
+        "rules": [
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.java"
+          }
+        ],
+        "apply_prompt": "/rules/language_rules/java.md"
+      },
+      "go": {
+        "rules": [
+          {
+            "ruletype": "pattern-match",
+            "pattern": "*.go"
+          }
+        ],
+        "apply_prompt": "/rules/language_rules/go.md"
+      }
+    }
+  }
+}

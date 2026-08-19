@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Benchmark artifacts
+benchmark_runs/
+runs/
+
+# Corpus and candidate findings.
+#
+# These are DERIVED artifacts that embed the full source diffs of whatever
+# repository they were captured from, plus unfixed security findings about it.
+# Capturing from a private repo means this file carries someone else's private
+# code, so it is never committed. Rebuild with:
+#   pr-reviewer benchmark-capture --repo <owner/name> <pr numbers...>
+corpus.json
+candidates.json
+
+# Local env
+.env
+.env.local
+
+# Local tooling state
+.codebase-memory/
