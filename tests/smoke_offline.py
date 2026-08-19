@@ -139,7 +139,7 @@ check("strict flag set", fn["strict"] is True)
 params = fn["parameters"]
 check("top-level additionalProperties false", params["additionalProperties"] is False)
 check("top-level required complete", set(params["required"]) == {"overall_rating", "summary", "comments", "metrics"}, params["required"])
-comment_def = params["$defs"]["ReviewComment"]
+comment_def = params["properties"]["comments"]["items"]
 check("nested required includes optional field", "implementation_notes" in comment_def["required"], comment_def["required"])
 check("nested additionalProperties false", comment_def["additionalProperties"] is False)
 check("optional stays nullable", any(o.get("type") == "null" for o in comment_def["properties"]["implementation_notes"].get("anyOf", [])))
@@ -153,6 +153,25 @@ def scan(node):
         return all(scan(v) for v in node)
     return True
 check("every object node hardened", scan(params))
+# The live endpoint ignored nested definitions reached through $defs, so the
+# schema must be self-contained before it is ever sent.
+blob = json.dumps(params)
+check("no $defs survive inlining", "$defs" not in blob)
+check("no $ref survives inlining", "$ref" not in blob)
+check("nested model inlined in place",
+      sorted(params["properties"]["comments"]["items"]["properties"]) == [
+          "category", "context_needed", "criteria", "implementation_complexity",
+          "implementation_notes", "line_numbers", "message", "rule", "severity",
+          "suggestion"])
+check("doubly-nested model inlined",
+      sorted(params["properties"]["comments"]["items"]["properties"]
+             ["line_numbers"]["items"]["properties"]) == ["line_number", "line_number_state"])
+from reviewer.provider.strict_schema import _inline_refs
+try:
+    _inline_refs({"$ref": "#/$defs/Nope"}, {})
+    check("unknown $ref raises", False, "no error")
+except ValueError:
+    check("unknown $ref raises", True)
 
 print("\n[7] json repair")
 check("fenced json recovered", loads_with_recovery('```json\n{"a": 1}\n```')["a"] == 1)

@@ -53,6 +53,9 @@ class AgentRunResult:
 class DeepSeekClient:
     def __init__(self, config: Config):
         self._config = config
+        self._extra_body: dict[str, Any] = (
+            {} if config.thinking else {"thinking": {"type": "disabled"}}
+        )
         self._client = OpenAI(
             api_key=config.require_api_key(),
             base_url=config.base_url,
@@ -76,6 +79,7 @@ class DeepSeekClient:
                 temperature=(
                     self._config.temperature if temperature is None else temperature
                 ),
+                extra_body=self._extra_body,
             )
             content = (resp.choices[0].message.content or "").strip()
             if not content:
@@ -113,6 +117,7 @@ class DeepSeekClient:
                 temperature=(
                     self._config.temperature if temperature is None else temperature
                 ),
+                extra_body=self._extra_body,
             )
             message = resp.choices[0].message
             calls = message.tool_calls or []
@@ -160,6 +165,7 @@ class DeepSeekClient:
                     messages=messages,
                     tools=tool_specs,
                     temperature=temp,
+                    extra_body=self._extra_body,
                 )
 
             resp = with_retries(_call, label=f"{label}:turn{turn}")

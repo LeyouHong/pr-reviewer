@@ -21,6 +21,11 @@ class Config:
     base_url: str = constants.DEFAULT_BASE_URL
     model: str = constants.DEFAULT_MODEL
     temperature: float = 0.0
+    # v4-pro thinks by default. Review work does not need it, and thinking mode
+    # rejects a forced tool_choice outright — which is how this pipeline gets a
+    # grammar-enforced schema. It also requires echoing reasoning_content back
+    # on every tool round-trip, which the agent loop does not do.
+    thinking: bool = False
 
     # Repository under review
     repo_path: Path = field(default_factory=Path.cwd)
