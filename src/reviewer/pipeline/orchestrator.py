@@ -6,6 +6,7 @@ import logging
 
 from ..config import Config
 from ..diffing.parser import snippet_for_lines
+from ..diffing.scope import filter_in_scope
 from ..models import (
     CodeChangeInfo,
     FileChange,
@@ -24,6 +25,7 @@ from .apply import ValidationOutcome, apply_verdict
 from .qualify import Qualifier
 from .render import Summarizer, to_markdown
 from .review import FileReviewer
+from .semgrep import collect_findings as semgrep_findings
 from .validate import Validator
 
 log = logging.getLogger(__name__)
@@ -57,9 +59,16 @@ class ReviewPipeline:
             total_files=len(info.changes),
             skipped_files=len(info.changes) - len(changes),
         )
+
+        # Semgrep runs once, over every changed file — cheaper than N per-file
+        # subprocess spawns, and keeps the rule engine's cross-file view intact
+        # for future rule packs that need it.
+        semgrep_by_file = self._semgrep(changes)
+
         for change in changes:
             log.info("reviewing %s", change.filepath)
             review = self.reviewer.review_file(change, info)
+            self._merge_semgrep(review, change, semgrep_by_file.get(change.filepath, []))
             if self.config.enable_validation:
                 review = self._validate(review, change, info)
             pr_review.file_reviews.append(review)
@@ -76,6 +85,34 @@ class ReviewPipeline:
         return to_markdown(pr_review, commit=commit)
 
     # -- internals --------------------------------------------------------
+
+    def _semgrep(self, changes: list[FileChange]) -> dict[str, list]:
+        if not self.config.semgrep_enabled:
+            return {}
+        options = self.router.semgrep_options()
+        if not options.enabled:
+            log.info("semgrep enabled but policy has no rules; skipping")
+            return {}
+        try:
+            return semgrep_findings(changes, self.config.repo_path, options)
+        except Exception as exc:  # noqa: BLE001 - semgrep failures must not sink the review
+            log.error("semgrep pass failed: %s", exc)
+            return {}
+
+    def _merge_semgrep(
+        self, review: FileChangeReview, change: FileChange, findings: list
+    ) -> None:
+        if not findings:
+            return
+        # Scope-check semgrep findings the same way LLM comments are checked.
+        # A semgrep hit on an unchanged line is a real defect that predates the
+        # PR — noise on a review of *this* change.
+        kept, dropped = filter_in_scope(change, list(findings))
+        review.ai_comments.extend(kept)
+        review.out_of_scope_comments.extend(dropped)
+        if kept and any(c.severity is Severity.ERROR for c in kept):
+            if review.overall_rating is OverallRating.GOOD:
+                review.overall_rating = OverallRating.NEEDS_IMPROVEMENT
 
     def _selectable(self, changes: list[FileChange]) -> list[FileChange]:
         keep = [

@@ -21,11 +21,11 @@ def gt(i, explore, value):
                             requires_exploration=explore, value=value)
 
 # PR1: 3 known bugs. Reviewer finds 2 of them (one twice) plus 1 false positive.
-p1 = PrPart(pr_id="r#1", matcher_version="binary-v1",
+p1 = PrPart(pr_id="r#1", matcher_version="judge-v1",
             ground_truth=[gt("1", False, "p1"), gt("2", True, "p2"), gt("3", True, "p1")],
             findings=[sf("error", "1"), sf("error", "1"), sf("warning", "2"), sf("info", None)])
 # PR2: deliberately clean; every finding is a false positive.
-p2 = PrPart(pr_id="r#2", matcher_version="binary-v1", ground_truth=[],
+p2 = PrPart(pr_id="r#2", matcher_version="judge-v1", ground_truth=[],
             findings=[sf("warning", None)])
 overall, per_sev, by_diff, by_value = score_parts([p1, p2])
 
@@ -39,7 +39,7 @@ check("f1", abs(overall.f1 - (2*0.6*(2/3))/(0.6+2/3)) < 1e-9, overall.f1)
 
 # The regression this replaced: a run that stops duplicating a hit keeps the
 # same recall instead of appearing to lose ground.
-dedup = PrPart(pr_id="r#1b", matcher_version="binary-v1",
+dedup = PrPart(pr_id="r#1b", matcher_version="judge-v1",
                ground_truth=[gt("1", False, "p1"), gt("2", True, "p2"), gt("3", True, "p1")],
                findings=[sf("error", "1"), sf("warning", "2"), sf("info", None)])
 o_dedup, *_ = score_parts([dedup, p2])
@@ -60,14 +60,14 @@ check("p1 recall", by_value["p1"].value == 0.5, (by_value["p1"].found, by_value[
 check("p2 recall", by_value["p2"].value == 1.0, (by_value["p2"].found, by_value["p2"].total))
 
 print("\n[guards]")
-mixed = [p1, PrPart(pr_id="r#3", matcher_version="binary-v2")]
+mixed = [p1, PrPart(pr_id="r#3", matcher_version="judge-v2")]
 try:
     score_parts(mixed)
     check("mixed matcher versions rejected", False, "no error raised")
 except ValueError:
     check("mixed matcher versions rejected", True)
 
-failed = PrPart(pr_id="r#4", matcher_version="binary-v1", failed=True, error="boom")
+failed = PrPart(pr_id="r#4", matcher_version="judge-v1", failed=True, error="boom")
 o2, *_ = score_parts([p1, failed])
 check("failed parts excluded from scoring", o2.true_positives == 3, o2.true_positives)
 check("failed parts contribute no ground truth", o2.ground_truth == 3, o2.ground_truth)
@@ -79,6 +79,55 @@ check("report separates bugs from findings", "known bugs found" in report and "f
 check("report lists failures", "`r#4`: boom" in report)
 check("report shows difficulty buckets", "Recall by difficulty" in report)
 check("report counts clean PRs", "deliberately clean" in report)
+
+print("\n[3-class judge collapse]")
+from reviewer.benchmark.model import JudgeVerdict, RawFinding
+from reviewer.benchmark.gold import GoldVote, _settle
+
+def _vote(idx, verdict, gt_id=None):
+    return GoldVote(pass_index=idx, verdict=verdict, matched_gt_id=gt_id,
+                    reasoning="r")
+
+raw = RawFinding(file="a.py", lines=[1], severity="error", category="logic",
+                 message="m", suggestion="s")
+
+# Unanimous MATCH with the same gt id → settled.
+settled = _settle(finding_id="f1", pr_id="pr1", raw=raw, votes=[
+    _vote(1, JudgeVerdict.MATCH, "gt-1"),
+    _vote(2, JudgeVerdict.MATCH, "gt-1"),
+    _vote(3, JudgeVerdict.MATCH, "gt-1"),
+])
+check("unanimous MATCH settles", settled.settled_verdict == JudgeVerdict.MATCH.value)
+check("settled gt id carried", settled.settled_gt_id == "gt-1")
+
+# Unanimous MATCH but different gt ids → TODO. Same verdict is not the same
+# answer if the passes disagree on which bug it is.
+split_ids = _settle(finding_id="f2", pr_id="pr1", raw=raw, votes=[
+    _vote(1, JudgeVerdict.MATCH, "gt-1"),
+    _vote(2, JudgeVerdict.MATCH, "gt-2"),
+])
+check("MATCH with split gt ids stays TODO", split_ids.settled_verdict == "TODO",
+      split_ids.settled_verdict)
+
+# Verdict split → TODO.
+mixed_votes = _settle(finding_id="f3", pr_id="pr1", raw=raw, votes=[
+    _vote(1, JudgeVerdict.MATCH, "gt-1"),
+    _vote(2, JudgeVerdict.PARTIAL, "gt-1"),
+    _vote(3, JudgeVerdict.NO_MATCH),
+])
+check("verdict disagreement stays TODO", mixed_votes.settled_verdict == "TODO")
+
+# No votes at all → TODO with the default.
+no_votes = _settle(finding_id="f4", pr_id="pr1", raw=raw, votes=[])
+check("no votes falls back to TODO", no_votes.settled_verdict == "TODO")
+
+# Unanimous PARTIAL should settle even if the ids disagree — PARTIAL does not
+# claim identity, so we do not require id agreement.
+partial = _settle(finding_id="f5", pr_id="pr1", raw=raw, votes=[
+    _vote(1, JudgeVerdict.PARTIAL, "gt-1"),
+    _vote(2, JudgeVerdict.PARTIAL, "gt-2"),
+])
+check("unanimous PARTIAL settles", partial.settled_verdict == JudgeVerdict.PARTIAL.value)
 
 print("\n[corpus round-trip]")
 c = Corpus(prs=[CorpusPr(id="acme/api#7", repo="acme/api", number=7, diff="x", pin_commit="deadbeef",

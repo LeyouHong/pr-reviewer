@@ -214,6 +214,50 @@ for path, want in [("src/api/orders.py", "python"), ("web/App.tsx", "typescript"
 check("vendor excluded", router.excluded("vendor/foo/bar.go"))
 check("normal path not excluded", not router.excluded("src/api/orders.py"))
 
+print("\n[8b] semgrep options + suppression")
+from reviewer.policy import SemgrepSuppress, is_suppressed
+opts = router.semgrep_options()
+check("semgrep policy rules loaded", opts.enabled and len(opts.rules) >= 1, opts.rules)
+check("semgrep suppress carries reason", all(s.reason for s in opts.suppress), opts.suppress)
+suppress_case = SemgrepSuppress(
+    path_prefixes=["scripts/"], rule_patterns=["python.subprocess.*"],
+    reason="operator scripts intentionally shell out",
+)
+check("path + rule match suppresses",
+      is_suppressed("scripts/deploy.py", "python.subprocess.foo", [suppress_case])
+      == "operator scripts intentionally shell out")
+check("path match but wrong rule not suppressed",
+      is_suppressed("scripts/deploy.py", "python.sql.other", [suppress_case]) is None)
+check("rule match but wrong path not suppressed",
+      is_suppressed("src/api.py", "python.subprocess.foo", [suppress_case]) is None)
+rule_only = SemgrepSuppress(rule_patterns=["broken-rule"], reason="known false positive")
+check("empty path prefixes match any path",
+      is_suppressed("anywhere/foo.py", "broken-rule", [rule_only]) == "known false positive")
+
+print("\n[8c] semgrep finding coercion")
+from reviewer.pipeline.semgrep import coerce_finding
+finding = {
+    "check_id": "python.lang.security.audit.hardcoded-password",
+    "path": "src/api/orders.py",
+    "start": {"line": 13},
+    "extra": {
+        "severity": "ERROR",
+        "message": "Hardcoded password detected.",
+        "metadata": {"category": "security"},
+    },
+}
+coerced = coerce_finding(finding, fc)
+check("semgrep coerced to ReviewComment", coerced is not None)
+check("severity mapped to error", coerced.severity == Severity.ERROR, coerced.severity)
+check("category mapped to security", coerced.category == Category.SECURITY, coerced.category)
+check("line marked diff-added when in added_lines",
+      coerced.line_numbers[0].line_number_state == LineState.DIFF_ADDED,
+      coerced.line_numbers[0].line_number_state)
+off_diff = coerce_finding({**finding, "start": {"line": 5}}, fc)
+check("semgrep line outside diff marked as file-context",
+      off_diff.line_numbers[0].line_number_state == LineState.FILE_CONTEXT,
+      off_diff.line_numbers[0].line_number_state)
+
 print("\n[9] prompt composition")
 lib = PromptLibrary(res)
 check("reviewer role loaded", lib.role("reviewer") == "You are a code review assistant.")

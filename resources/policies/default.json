@@ -80,6 +80,25 @@
         ],
         "apply_prompt": "/rules/language_rules/go.md"
       }
+    },
+    "semgrep": {
+      "rules": [
+        "p/security-audit",
+        "p/secrets"
+      ],
+      "exclude": [
+        "tests/",
+        "test/",
+        "**/*_test.py",
+        "**/*_test.go"
+      ],
+      "suppress": [
+        {
+          "path_prefixes": ["scripts/"],
+          "rule_patterns": ["python.lang.security.audit.subprocess-shell-true"],
+          "reason": "operator scripts intentionally shell out with a known-safe command line"
+        }
+      ]
     }
   }
 }

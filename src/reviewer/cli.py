@@ -12,6 +12,7 @@ from .config import Config
 from .pipeline.orchestrator import ReviewPipeline
 from .benchmark.capture import capture
 from .benchmark.calibration import run_calibration
+from .benchmark.gold import format_worklist, label_run
 from .benchmark.runner import run_benchmark
 from .sources import github, local_git
 
@@ -48,6 +49,11 @@ def _common(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip the qualification/validation pipeline (faster, noisier).",
     )
+    parser.add_argument(
+        "--semgrep",
+        action="store_true",
+        help="Run semgrep over the changed files and fold findings into the review.",
+    )
     parser.add_argument("--max-files", type=int, default=None)
     parser.add_argument("-o", "--output", type=Path, default=None)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -62,6 +68,7 @@ def _config_from(args: argparse.Namespace) -> Config:
         agentic_review=True if args.agentic else None,
         ensemble_size=args.ensemble,
         enable_validation=False if args.no_validate else None,
+        semgrep_enabled=True if args.semgrep else None,
         max_files=args.max_files,
         output_path=args.output,
         verbose=args.verbose,
@@ -132,6 +139,21 @@ def cmd_benchmark_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_benchmark_gold(args: argparse.Namespace) -> int:
+    config = _config_from(args)
+    worklist = label_run(config, args.corpus, args.run_dir, passes=args.passes)
+    args.worklist.parent.mkdir(parents=True, exist_ok=True)
+    args.worklist.write_text(worklist.model_dump_json(indent=2), encoding="utf-8")
+    _emit(format_worklist(worklist), args.output)
+    unsettled = len(worklist.unsettled)
+    print(
+        f"gold: {len(worklist.confident)}/{len(worklist.findings)} confident, "
+        f"{unsettled} TODO",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def cmd_calibrate_matcher(args: argparse.Namespace) -> int:
     import importlib.util
 
@@ -184,6 +206,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     _common(bench)
     bench.set_defaults(func=cmd_benchmark_run)
+
+    gold = sub.add_parser(
+        "benchmark-gold",
+        help="Run N judge passes over an existing benchmark run and merge them",
+    )
+    gold.add_argument("--corpus", type=Path, default=Path("corpus.json"))
+    gold.add_argument("--run-dir", type=Path, default=Path("benchmark_runs/latest"))
+    gold.add_argument(
+        "--passes",
+        type=int,
+        default=3,
+        help="Number of independent judge passes per finding. Odd is preferable.",
+    )
+    gold.add_argument(
+        "--worklist",
+        type=Path,
+        default=Path("gold.json"),
+        help="Where to write the merged worklist JSON.",
+    )
+    _common(gold)  # supplies -o/--output for the markdown summary.
+    gold.set_defaults(func=cmd_benchmark_gold)
 
     cal = sub.add_parser(
         "calibrate-matcher",

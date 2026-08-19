@@ -7,11 +7,26 @@ file, ground truth written by a person.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
 
 from ..models import ValuableDecision  # re-exported for benchmark callers
+
+
+class JudgeVerdict(str, Enum):
+    """Three-way match outcome, so PARTIAL is a first-class signal.
+
+    A binary matcher collapses "same construct, wrong root cause" into
+    NO_MATCH, which then reads as a false positive in the scorecard even
+    though the reviewer surfaced the right code site. Naming PARTIAL
+    separately lets prompt work target that failure mode specifically.
+    """
+
+    MATCH = "MATCH"
+    PARTIAL = "PARTIAL"
+    NO_MATCH = "NO_MATCH"
 
 
 class GroundTruthIssue(BaseModel):
@@ -69,6 +84,11 @@ class RawFinding(BaseModel):
 class ScoredFinding(RawFinding):
     matched_gt_id: Optional[str] = None
     reasoning: str = ""
+    # ``verdict`` is the raw 3-class judge outcome. ``matched_gt_id`` is the
+    # binary collapse used by ``scoring.py`` (only MATCH counts as recall).
+    # Keeping both lets the report characterise PARTIAL separately without
+    # rebreaking the historical scorecard.
+    verdict: JudgeVerdict = JudgeVerdict.NO_MATCH
 
 
 class PrPart(BaseModel):
@@ -82,10 +102,16 @@ class PrPart(BaseModel):
     error: str = ""
 
 
-class MatchDecision(BaseModel):
-    """LLM-facing: reasoning first so the procedure runs before the verdict."""
+class JudgeDecision(BaseModel):
+    """LLM-facing 3-class judge output. Reasoning before the verdict.
+
+    ``matched_gt_id`` is the ground-truth id the candidate points at; carried
+    for both MATCH and PARTIAL so PARTIAL entries are still comparable across
+    passes. A NO_MATCH must carry a null id.
+    """
 
     reasoning: str
+    verdict: JudgeVerdict
     matched_gt_id: Optional[str] = None
 
 

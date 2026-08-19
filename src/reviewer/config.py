@@ -43,6 +43,10 @@ class Config:
     agentic_review: bool = False
     ensemble_size: int = constants.ENSEMBLE_SIZE
     enable_validation: bool = True
+    # Off by default: semgrep is a separate binary that must be on PATH, and
+    # the registry rules make a network call on the first invocation. Callers
+    # opt in via ``--semgrep`` when the environment is ready.
+    semgrep_enabled: bool = False
     max_files: int = 100
 
     # Output
