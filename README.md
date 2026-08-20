@@ -80,6 +80,30 @@ GitHub PR / git diff
 
 按官方非峰时价格（输入 cache miss $0.66/M，输出 $1.98/M）粗估，单文件走完完整链路约 **$0.14**，20 文件的 PR 约 **$2.8**。峰时（UTC 01:00–04:00 / 06:00–10:00）翻倍，定时任务排到非峰时可省一半。
 
+## 部署：每个 PR 自动审查
+
+`.github/workflows/pr-review.yml` 是可直接用的模板。装到**被审查的仓库**里（不是本仓库），然后配两个 secret。
+
+### 三步
+
+1. 把 `.github/workflows/pr-review.yml` 复制进目标仓库
+2. 目标仓库 Settings → Secrets → Actions 添加 `DEEPSEEK_API_KEY`
+3. 本仓库是私有的话，再加一个 `REVIEWER_REPO_TOKEN`（有本仓库读权限的 PAT）；本仓库公开则可删掉那一行
+
+### 几个必须知道的点
+
+**检出的是 `head.sha`，不是默认的 merge commit。** Actions 默认给你一个 PR 与 base 的临时合并结果，那不是作者写的代码。审查器每个读文件的阶段都必须看到 diff 所对应的树，所以工作流显式指定 `ref: github.event.pull_request.head.sha`，并用 `--repo-path` 指过去。
+
+**`synchronize` 是日常真正起作用的事件。** 作者一推新 commit，上一次的审查就过期了。加上 `concurrency` + `cancel-in-progress`，推送期间的旧运行会被取消而不是和新运行抢着发评论。
+
+**来自 fork 的 PR 拿不到 secret。** 这是 GitHub 的安全设计，不是配置问题：`pull_request` 事件在 fork 上下文里没有仓库 secret，工作流会因为缺 key 失败。想覆盖 fork 就得用 `pull_request_target`，那会让不受信任的代码在有 secret 的上下文里跑——**不要这么做**，除非你完全清楚风险。内部仓库不受影响。
+
+**成本随 PR 大小线性增长。** `--max-files 60` 是护栏；一个改了 300 个文件的 PR 会审前 60 个并在报告里注明跳过数。按当前语料测算约 $0.02/文件。
+
+### 换个姿势：定时扫描
+
+不想每次推送都触发，或者想覆盖多个仓库，用 `scan` 子命令配 cron——见上一节。两者可以共存：Actions 管热路径，cron 兜底捡漏。
+
 ## 定时扫描
 
 `scan` 子命令按 `settings.json` 遍历仓库，决定哪些开放 PR 需要审查。示例见 `settings.example.json`。

@@ -1,0 +1,67 @@
+name: AI code review
+
+# Fires on open and on every later push to the branch. `synchronize` is the one
+# that matters day to day — a review of the first commit is stale the moment
+# the author pushes a fix.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read          # read the tree being reviewed
+  pull-requests: write    # post the review
+
+# One review per branch. A push during a review cancels the older run rather
+# than racing it to the comment box — the newer diff is the one worth money.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Drafts are still being written. Remove this line to review them too.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: LeyouHong/pr-reviewer
+          path: reviewer
+          # A private reviewer repo needs a PAT with read access here.
+          token: ${{ secrets.REVIEWER_REPO_TOKEN || github.token }}
+
+      - name: Check out the code under review
+        uses: actions/checkout@v4
+        with:
+          # The pull request head, not the merge commit: every stage that opens
+          # a file must see the tree the diff was written against.
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: subject
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        working-directory: reviewer
+        run: pip install --quiet -e .
+
+      - name: Review
+        working-directory: reviewer
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_HASH: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pr-reviewer review-pr "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --repo-path "${GITHUB_WORKSPACE}/subject" \
+            --v2 \
+            --post --inline \
+            --max-files 60 \
+            -v
