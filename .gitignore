@@ -27,3 +27,5 @@ candidates.json
 # Local tooling state
 .codebase-memory/
 corpus_retired.json
+crb_corpus.json
+crb_smoke.json
