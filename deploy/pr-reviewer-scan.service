@@ -1,0 +1,26 @@
+[Unit]
+Description=pr-reviewer reconciling sweep
+Documentation=https://github.com/LeyouHong/pr-reviewer
+
+[Service]
+Type=oneshot
+User=pr-reviewer
+Group=pr-reviewer
+EnvironmentFile=/etc/pr-reviewer/pr-reviewer.env
+WorkingDirectory=/var/lib/pr-reviewer
+
+# Catches what the webhook missed: a delivery dropped during a deploy, a
+# network blip, a receiver that was down. Revision-keyed dedup means a sweep
+# that finds nothing new does nothing at all, so this is cheap to run often.
+ExecStart=/opt/pr-reviewer/.venv/bin/pr-reviewer scan \
+    --settings /etc/pr-reviewer/settings.json \
+    --v2
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/pr-reviewer /srv/checkouts
+
+StandardOutput=journal
+StandardError=journal

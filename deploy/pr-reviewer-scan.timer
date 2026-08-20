@@ -1,0 +1,16 @@
+[Unit]
+Description=Run the pr-reviewer reconciling sweep every 20 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=20min
+
+# Spreads the sweep so a fleet of hosts does not call the GitHub API in unison.
+RandomizedDelaySec=180
+
+# A host that was asleep or off runs the sweep once on wake rather than
+# skipping the window entirely — the sweep exists precisely for missed events.
+Persistent=yes
+
+[Install]
+WantedBy=timers.target

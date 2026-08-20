@@ -139,6 +139,8 @@ GitHub 仓库 Settings → Webhooks 添加 `https://你的域名/webhook`，cont
 **cron 扫描是对账循环，不是主力**。webhook 会丢投（服务重启、网络抖动），扫描把丢的
 捡回来。webhook 正常时它几乎什么都不做——所有任务都被去重挡掉了。15~30 分钟一次足够。
 
+完整的 systemd 单元、nginx 配置和安装步骤在 [`deploy/`](deploy/README.md)。
+
 ### worker 读的是哪份代码
 
 `--settings` 里每个仓库的 `checkout` 指向一份本地 clone。worker 处理每个任务时，在**那个任务自己的 head commit** 上切一个 detached worktree，跑完释放。

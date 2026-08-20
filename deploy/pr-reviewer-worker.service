@@ -1,0 +1,61 @@
+[Unit]
+Description=pr-reviewer review worker
+Documentation=https://github.com/LeyouHong/pr-reviewer
+After=network-online.target
+Wants=network-online.target
+
+# Five failures inside ten minutes stops the unit and leaves it stopped. A
+# transient fault recovers well inside that; a persistent one — expired token,
+# empty balance, unreadable checkout — needs a person, and quietly retrying
+# forever hides it. Jobs stay queued either way.
+#
+# These live in [Unit], not [Service]: systemd moved them in v230 and only
+# accepts the old placement for compatibility, with a warning.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=pr-reviewer
+Group=pr-reviewer
+EnvironmentFile=/etc/pr-reviewer/pr-reviewer.env
+WorkingDirectory=/var/lib/pr-reviewer
+
+ExecStart=/opt/pr-reviewer/.venv/bin/pr-reviewer worker \
+    --queue /var/lib/pr-reviewer/queue \
+    --settings /etc/pr-reviewer/settings.json \
+    --v2
+
+Restart=always
+
+# One minute, not the usual five seconds. The worker exits deliberately when
+# the account cannot pay, and a fast restart loop would hammer the API with
+# requests that are all going to be refused.
+RestartSec=60
+
+# A review is minutes of model calls; killing one mid-flight loses the spend.
+# The claim TTL returns the job to the queue afterwards, so a slow shutdown
+# costs nothing but patience.
+TimeoutStopSec=900
+KillSignal=SIGTERM
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+# The queue, and the clones the worker cuts worktrees from. The worktree
+# directory is created beside each clone, so the *parent* must be writable —
+# a common way to get a working setup that fails only when validation is on.
+ReadWritePaths=/var/lib/pr-reviewer /srv/checkouts
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

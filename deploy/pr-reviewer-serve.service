@@ -1,0 +1,44 @@
+[Unit]
+Description=pr-reviewer webhook receiver
+Documentation=https://github.com/LeyouHong/pr-reviewer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pr-reviewer
+Group=pr-reviewer
+EnvironmentFile=/etc/pr-reviewer/pr-reviewer.env
+WorkingDirectory=/var/lib/pr-reviewer
+
+# Binds to loopback only. TLS termination and the public address belong to the
+# reverse proxy; this process should never be reachable directly.
+ExecStart=/opt/pr-reviewer/.venv/bin/pr-reviewer serve \
+    --queue /var/lib/pr-reviewer/queue \
+    --host 127.0.0.1 --port 8787 --path /webhook
+
+Restart=always
+RestartSec=5
+
+# The receiver holds no state beyond the queue directory, so it can be locked
+# down hard. It never needs the network as a client, but AF_INET is required to
+# accept connections.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/var/lib/pr-reviewer
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
