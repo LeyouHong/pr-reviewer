@@ -510,6 +510,47 @@ review_flag, reason = _should_review(
 check("fresh report suppresses a normal-comment update",
       not review_flag and "already reviewed" in reason, reason)
 
+print("\n[11e] scan: trigger expiry + checkout scoping")
+from dataclasses import replace as _replace
+from reviewer.pipeline.scan import _should_review, _scoped_to_checkout, _newest_report_at
+from reviewer.settings import RepoConfig
+
+def _c(body, at): return {"body": body, "created_at": at}
+def _rep(at): return {"body": "x <!-- pr-reviewer:code_review_report --> y", "created_at": at}
+
+PR = {"number": 7, "updatedAt": "2026-08-19T10:00:00Z", "headRefOid": "abc123"}
+
+# A !review posted before the newest report was already answered by it.
+old_trigger = [_c("please !review this", "2026-08-19T09:00:00Z")]
+reports_after = [_rep("2026-08-19T11:00:00Z")]
+ok, why = _should_review(PR, old_trigger, reports_after)
+check("answered !review does not re-fire", ok is False, why)
+
+# The same comment with no report yet must still force a review.
+ok, why = _should_review(PR, old_trigger, [])
+check("unanswered !review still fires", ok is True and "!review" in why, why)
+
+# A !review posted after the last report is a new request.
+new_trigger = [_c("!review again", "2026-08-19T12:00:00Z")]
+ok, why = _should_review(PR, new_trigger, reports_after)
+check("!review newer than the report fires", ok is True and "!review" in why, why)
+
+# Opt-out ignores the report bound entirely.
+ok, why = _should_review(PR, [_c("!do-not-review", "2026-01-01T00:00:00Z")], reports_after)
+check("opt-out wins regardless of age", ok is False and "opted out" in why, why)
+
+check("newest report timestamp picked",
+      _newest_report_at([_rep("2026-01-01T00:00:00Z"), _rep("2026-08-19T11:00:00Z")])
+      == "2026-08-19T11:00:00Z")
+
+# Without a checkout the file-reading stages must be off, never left aimed at cwd.
+base = Config(api_key="x", enable_validation=True, agentic_review=True)
+scoped, wt = _scoped_to_checkout(base, RepoConfig(url="o/r"), PR, None)
+check("no checkout disables validation", scoped.enable_validation is False)
+check("no checkout disables agentic review", scoped.agentic_review is False)
+check("no worktree to release", wt is None)
+check("caller config untouched", base.enable_validation is True and base.agentic_review is True)
+
 print("\n[12] model round-trip")
 review = LLMFileChangeReview(
     overall_rating=OverallRating.NEEDS_IMPROVEMENT, summary="s", comments=[mk(13)],

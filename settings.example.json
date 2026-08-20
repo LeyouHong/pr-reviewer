@@ -1,0 +1,19 @@
+{
+  "repositories": {
+    "owner/service-api": {
+      "target-branches": ["main", "release/*"],
+      "timerange": 1209600,
+      "checkout": "~/src/service-api"
+    },
+    "owner/docs-site": {
+      "target-branches": ["main"]
+    }
+  },
+  "operation": {
+    "timezone": "Asia/Shanghai",
+    "hours": {
+      "active":   {"max_files": 100,  "timerange": 1209600,  "start": "09:00", "end": "21:00"},
+      "inactive": {"max_files": 1000, "timerange": 31536000, "start": "21:00", "end": "09:00"}
+    }
+  }
+}

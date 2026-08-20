@@ -29,8 +29,9 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from ..config import Config
-from ..settings import ScanSettings, WindowConfig
+from ..settings import RepoConfig, ScanSettings, WindowConfig
 from ..sources import github
+from ..sources.worktree import WorktreePool, WorktreeError
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,44 @@ log = logging.getLogger(__name__)
 def _resolve_overrides(settings: ScanSettings) -> WindowConfig | None:
     now = datetime.now(tz=ZoneInfo(settings.operation.timezone))
     return settings.operation.window_for(now)
+
+
+def _scoped_to_checkout(
+    config: Config, repo: RepoConfig, pr: dict, pool: WorktreePool | None
+) -> tuple[Config, str | None]:
+    """Point the file-reading stages at this pull request's own tree.
+
+    Returns the config to review with, plus the worktree path to clean up
+    afterwards. When the repository declares no checkout, the stages that would
+    read files are switched off instead of being left aimed at the scanner's
+    working directory: a validator reading an unrelated repository does not
+    fail, it returns confident verdicts about code that has nothing to do with
+    the change.
+    """
+    if pool is None:
+        return (
+            replace(config, enable_validation=False, agentic_review=False),
+            None,
+        )
+
+    number = int(pr["number"])
+    head = pr.get("headRefOid") or ""
+    name = f"{repo.url}#{number}"
+    if head and not pool.has(head):
+        pool.fetch(f"+refs/pull/{number}/head:refs/remotes/origin/pr/{number}")
+    try:
+        path = pool.checkout(name, head)
+    except WorktreeError as exc:
+        log.warning(
+            "scan: no checkout for %s (%s); reviewing the diff without file access",
+            name,
+            exc,
+        )
+        return (
+            replace(config, enable_validation=False, agentic_review=False),
+            None,
+        )
+    return replace(config, repo_path=path), name
 
 
 def _apply_overrides(config: Config, window: WindowConfig | None) -> Config:
@@ -59,7 +98,11 @@ def _should_review(
     The reason string is what the scan log prints, so it doubles as the
     operator's audit trail: "why did we (not) review PR X on this pass?".
     """
-    trigger = github.trigger_marker(comments)
+    # A trigger is consumed by the report that answers it. Without this bound
+    # one ``!review`` comment re-fires on every sweep forever, because the
+    # comment never goes away.
+    answered_at = _newest_report_at(reports)
+    trigger = github.trigger_marker(comments, since_iso=answered_at or None)
     if trigger == "!do-not-review":
         return False, "opted out via !do-not-review"
     if trigger == "!review":
@@ -72,11 +115,14 @@ def _should_review(
     return True, "no fresh report"
 
 
+def _newest_report_at(reports: list[dict]) -> str:
+    """Timestamp of the most recent report, or ``""`` when none exists."""
+    return max((r.get("created_at") or "" for r in reports), default="")
+
+
 def _newest_report_after(reports: list[dict], iso: str) -> bool:
-    if not reports:
-        return False
-    newest = max(r.get("created_at", "") for r in reports)
-    return newest > iso
+    newest = _newest_report_at(reports)
+    return bool(newest) and newest > iso
 
 
 def scan_repos(
@@ -104,6 +150,19 @@ def scan_repos(
             log.error("scan: failed to list PRs for %s: %s", repo.url, exc)
             continue
 
+        pool: WorktreePool | None = None
+        if repo.checkout is not None:
+            try:
+                pool = WorktreePool(repo.checkout, repo.checkout.parent / ".pr-reviewer-worktrees")
+            except WorktreeError as exc:
+                log.error("scan: %s declares checkout %s but %s", repo.url, repo.checkout, exc)
+        elif config.enable_validation or config.agentic_review:
+            log.warning(
+                "scan: %s has no `checkout` in settings; validation and agentic "
+                "review are disabled for it so no stage reads an unrelated tree",
+                repo.url,
+            )
+
         log.info("scan: %s -> %d open PR(s)", repo.url, len(prs))
         for pr in prs:
             number = int(pr["number"])
@@ -126,13 +185,23 @@ def scan_repos(
                 results.append(entry)
                 continue
 
+            pr_config, worktree_name = _scoped_to_checkout(
+                scoped_config, repo, pr, pool
+            )
+            entry["repo_path"] = str(pr_config.repo_path)
             try:
-                _review_and_post(scoped_config, repo.url, number, reviewer)
+                _review_and_post(pr_config, repo.url, number, reviewer)
                 entry["reviewed"] = True
             except Exception as exc:  # noqa: BLE001 - one PR must not sink the sweep
                 log.error("scan: review of %s#%d failed: %s", repo.url, number, exc)
                 entry["error"] = str(exc)
+            finally:
+                if pool is not None and worktree_name is not None:
+                    pool.release(worktree_name)
             results.append(entry)
+
+        if pool is not None:
+            pool.cleanup()
     return results
 
 

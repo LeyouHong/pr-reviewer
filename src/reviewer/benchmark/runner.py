@@ -19,7 +19,7 @@ from ..pipeline.orchestrator import ReviewPipeline
 from ..provider.errors import is_billing_failure
 from .matcher import MATCHER_VERSION, Matcher
 from .model import Corpus, CorpusPr, PrPart, RawFinding
-from .worktree import WorktreePool
+from ..sources.worktree import WorktreePool
 from .scoring import format_report, score_parts
 
 log = logging.getLogger(__name__)

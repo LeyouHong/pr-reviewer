@@ -74,9 +74,20 @@ class OperationConfig:
 
 @dataclass
 class RepoConfig:
+    """One repository the scanner watches.
+
+    ``checkout`` is the local clone whose objects the reviewer reads while
+    judging a pull request. Every stage that opens a file — the agentic
+    reviewer, the deep validator, semgrep — needs the tree at that pull
+    request's head, not whatever directory cron happened to start in. Leaving
+    it unset is allowed and downgrades the repository to a diff-only review
+    rather than silently reading the wrong files.
+    """
+
     url: str
     target_branches: list[str] = field(default_factory=lambda: ["main"])
     timerange: int = 14 * 24 * 3600  # 14 days, matching the reference default.
+    checkout: Optional[Path] = None
 
 
 @dataclass
@@ -93,6 +104,7 @@ def load_settings(path: Path) -> ScanSettings:
             url=url,
             target_branches=list(cfg.get("target-branches") or ["main"]),
             timerange=int(cfg.get("timerange") or (14 * 24 * 3600)),
+            checkout=Path(cfg["checkout"]).expanduser() if cfg.get("checkout") else None,
         )
         for url, cfg in repos_block.items()
     ]

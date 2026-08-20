@@ -80,6 +80,19 @@ GitHub PR / git diff
 
 按官方非峰时价格（输入 cache miss $0.66/M，输出 $1.98/M）粗估，单文件走完完整链路约 **$0.14**，20 文件的 PR 约 **$2.8**。峰时（UTC 01:00–04:00 / 06:00–10:00）翻倍，定时任务排到非峰时可省一半。
 
+## 定时扫描
+
+`scan` 子命令按 `settings.json` 遍历仓库，决定哪些开放 PR 需要审查。示例见 `settings.example.json`。
+
+每个仓库的 **`checkout` 是可选但重要的**：它指向该仓库的本地 clone，扫描时会为每个 PR 在其 head commit 上开一个 detached worktree，让深度验证器、agentic 审查器和 semgrep 读到**这个 PR 的代码**。
+
+不配 `checkout` 时，这些读文件的阶段会被**关闭**（降级为纯 diff 审查），而不是让它们去读 cron 进程的当前目录——验证器读错仓库不会报错，它会对毫不相干的代码给出自信的裁决。
+
+```bash
+pr-reviewer scan --settings settings.json --dry-run   # 只打印决策，不发帖
+pr-reviewer scan --settings settings.json
+```
+
 ## Benchmark：让 prompt 改动可测量
 
 这是唯一能回答"改完到底变好还是变差"的东西。
