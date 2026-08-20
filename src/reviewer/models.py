@@ -161,6 +161,9 @@ class CodeChangeInfo(BaseModel):
     cc_description: str
     source_branch: str
     target_branch: str
+    # The commit this review is *about*. Dedup keys on it, so a review is
+    # answered by the exact revision it examined rather than by a clock.
+    head_sha: str = ""
     changes: list[FileChange] = Field(default_factory=list)
 
 
@@ -189,6 +192,7 @@ class FileChangeReview(BaseModel):
 
 class PullRequestReview(BaseModel):
     cc_id: str
+    head_sha: str = ""
     file_reviews: list[FileChangeReview] = Field(default_factory=list)
     overall_rating: OverallRating = OverallRating.GOOD
     summary: str = ""

@@ -110,7 +110,7 @@ pipeline.summarizer = Summarizer(stub, pipeline.library)
 info = CodeChangeInfo(
     repository="acme/api", cc_id="42", cc_title="Add discount support",
     cc_description="Applies discounts to order totals.",
-    source_branch="feat/discounts", target_branch="main",
+    source_branch="feat/discounts", target_branch="main", head_sha="c0ffee1234abcd",
     changes=parse_unified_diff(DIFF),
 )
 
@@ -138,7 +138,13 @@ check("error count", result.error_count == 1, result.error_count)
 check("rating downgraded", result.overall_rating is OverallRating.NEEDS_IMPROVEMENT, result.overall_rating)
 
 print("\n[markdown]")
-check("fingerprint present", "<!-- pr-reviewer:code_review_report -->" in markdown)
+check("marker present", "<!-- pr-reviewer:code_review_report" in markdown)
+check("marker records the reviewed revision",
+      "sha=c0ffee1234abcd" in markdown, markdown.splitlines()[0])
+check("reviewed commit shown in diagnostics", "Reviewed commit: `c0ffee1234abcd`" in markdown)
+from reviewer.sources.github import parse_reviewed_sha
+check("the posted report answers a dedup query",
+      parse_reviewed_sha(markdown) == "c0ffee1234abcd")
 check("file heading present", "## `src/api/orders.py`" in markdown)
 check("counts precede content", markdown.index("- Errors: 1") < markdown.index("Mutable default"))
 check("severity grouping", "### Errors" in markdown)

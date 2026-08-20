@@ -76,5 +76,18 @@ REVIEW_IGNORE = (
     "*.generated.*",
 )
 
-# Fingerprint stamped into posted comments so stale reports can be found.
-REPORT_FINGERPRINT = "<!-- pr-reviewer:code_review_report -->"
+# Marker stamped into every posted report. The prefix identifies our comments
+# so stale ones can be pruned; the sha attribute records which revision the
+# report answers.
+#
+# Dedup keys on that sha rather than on timestamps, which lose a race that
+# happens constantly under "review every push": a push that lands *while* a
+# review runs produces a report whose creation time is newer than the pull
+# request's last-updated time, so the newer commit reads as already-reviewed
+# and is never looked at. A revision either has a report or it does not.
+REPORT_FINGERPRINT = "<!-- pr-reviewer:code_review_report"
+REPORT_MARKER_END = "-->"
+
+
+def report_marker(head_sha: str = "") -> str:
+    return f"{REPORT_FINGERPRINT} sha={head_sha or 'unknown'} {REPORT_MARKER_END}"

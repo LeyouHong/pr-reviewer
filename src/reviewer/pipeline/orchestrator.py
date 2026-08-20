@@ -56,6 +56,7 @@ class ReviewPipeline:
 
         pr_review = PullRequestReview(
             cc_id=info.cc_id,
+            head_sha=info.head_sha,
             total_files=len(info.changes),
             skipped_files=len(info.changes) - len(changes),
         )

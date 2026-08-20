@@ -39,5 +39,6 @@ def load_local_diff(repo: Path, base: str) -> CodeChangeInfo:
         cc_description=body,
         source_branch=branch,
         target_branch=base,
+        head_sha=_git(repo, "rev-parse", "HEAD").strip(),
         changes=parse_unified_diff(diff),
     )

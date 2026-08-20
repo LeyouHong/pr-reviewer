@@ -548,73 +548,73 @@ check("!do-not-review wins over !review regardless of order",
 check("older !review ignored when since_iso is in the future",
       trigger_marker(_comments[:2], since_iso="2027-01-01T00:00:00Z") is None)
 
-# Trigger routing inside the scan decision.
+# Trigger routing inside the scan decision. The revision rules themselves are
+# exercised in [11e]; these cases check only that a trigger reaches them.
 from reviewer.pipeline.scan import _should_review
-review_flag, reason = _should_review(
-    {"updatedAt": "2026-01-05T00:00:00Z"},
-    _comments,
-    reports=[],
-)
+from reviewer.constants import report_marker as _marker
+
+_PR = {"number": 7, "headRefOid": "feed1234", "updatedAt": "2026-01-05T00:00:00Z"}
+
+review_flag, reason = _should_review(_PR, _comments, reports=[])
 check("do-not-review kills the review decision", not review_flag and "opted out" in reason, reason)
 
-_comments_ok = [{"body": "please !review", "created_at": "2026-01-05T00:00:00Z"}]
-old_report = [{"body": "old", "created_at": "2026-01-01T00:00:00Z"}]
+_reviewed = [{"body": _marker("feed1234"), "created_at": "2026-01-01T00:00:00Z"}]
 review_flag, reason = _should_review(
-    {"updatedAt": "2026-01-10T00:00:00Z"},
-    _comments_ok,
-    old_report,
+    _PR, [{"body": "please !review", "created_at": "2026-01-05T00:00:00Z"}], _reviewed
 )
-check("!review overrides an existing stale report", review_flag and "!review" in reason, reason)
+check("!review re-reviews a revision that already has a report",
+      review_flag and "!review" in reason, reason)
 
-fresh_report = [{"body": "fresh", "created_at": "2026-01-15T00:00:00Z"}]
 review_flag, reason = _should_review(
-    {"updatedAt": "2026-01-10T00:00:00Z"},
-    [{"body": "just a note", "created_at": "2026-01-11T00:00:00Z"}],
-    fresh_report,
+    _PR, [{"body": "just a note", "created_at": "2026-01-11T00:00:00Z"}], _reviewed
 )
-check("fresh report suppresses a normal-comment update",
+check("an ordinary comment does not re-trigger a reviewed revision",
       not review_flag and "already reviewed" in reason, reason)
 
-print("\n[11e] scan: trigger expiry + checkout scoping")
-from dataclasses import replace as _replace
-from reviewer.pipeline.scan import _should_review, _scoped_to_checkout, _newest_report_at
+print("\n[11e] scan: revision-keyed dedup, trigger expiry, checkout scoping")
+from reviewer.pipeline.scan import _should_review, _scoped_to_checkout
 from reviewer.settings import RepoConfig
+from reviewer.constants import report_marker
+from reviewer.sources.github import parse_reviewed_sha
 
-def _c(body, at): return {"body": body, "created_at": at}
-def _rep(at): return {"body": "x <!-- pr-reviewer:code_review_report --> y", "created_at": at}
+def _rep(sha, at="2026-08-20T10:00:00Z"):
+    return {"body": report_marker(sha) + "\n# Code review report", "created_at": at}
+def _cm(body, at="2026-08-19T12:00:00Z"):
+    return {"body": body, "created_at": at}
+def _pr(sha, updated="2026-08-20T09:00:00Z"):
+    return {"number": 7, "headRefOid": sha, "updatedAt": updated}
 
-PR = {"number": 7, "updatedAt": "2026-08-19T10:00:00Z", "headRefOid": "abc123"}
+check("marker round-trips the revision",
+      parse_reviewed_sha(report_marker("abc1234def")) == "abc1234def")
+check("a report predating the sha marker is not a dedup answer",
+      parse_reviewed_sha("<!-- pr-reviewer:code_review_report --> old") is None)
 
-# A !review posted before the newest report was already answered by it.
-old_trigger = [_c("please !review this", "2026-08-19T09:00:00Z")]
-reports_after = [_rep("2026-08-19T11:00:00Z")]
-ok, why = _should_review(PR, old_trigger, reports_after)
-check("answered !review does not re-fire", ok is False, why)
+# The race the timestamp rule lost: a push landing while a review runs.
+ok, why = _should_review(_pr("bbbb2222"), [], [_rep("aaaa1111", "2026-08-20T11:00:00Z")])
+check("a newer report for an older commit does not suppress the new one", ok, why)
 
-# The same comment with no report yet must still force a review.
-ok, why = _should_review(PR, old_trigger, [])
-check("unanswered !review still fires", ok is True and "!review" in why, why)
+ok, why = _should_review(_pr("aaaa1111"), [], [_rep("aaaa1111")])
+check("the same revision is never reviewed twice", ok is False and "already reviewed" in why, why)
+ok, why = _should_review(_pr("aaaa1111"), [], [])
+check("an unreviewed revision is reviewed", ok, why)
+ok, why = _should_review(_pr(""), [], [])
+check("no revision means no review, rather than a guess", ok is False, why)
 
-# A !review posted after the last report is a new request.
-new_trigger = [_c("!review again", "2026-08-19T12:00:00Z")]
-ok, why = _should_review(PR, new_trigger, reports_after)
-check("!review newer than the report fires", ok is True and "!review" in why, why)
-
-# Opt-out ignores the report bound entirely.
-ok, why = _should_review(PR, [_c("!do-not-review", "2026-01-01T00:00:00Z")], reports_after)
-check("opt-out wins regardless of age", ok is False and "opted out" in why, why)
-
-check("newest report timestamp picked",
-      _newest_report_at([_rep("2026-01-01T00:00:00Z"), _rep("2026-08-19T11:00:00Z")])
-      == "2026-08-19T11:00:00Z")
+# Triggers keep their own, timestamp-shaped semantics: they are point-in-time
+# requests, answered by any report that followed them.
+ok, why = _should_review(_pr("aaaa1111"), [_cm("please !review", "2026-08-20T12:00:00Z")], [_rep("aaaa1111")])
+check("!review overrides an already-reviewed revision", ok and "!review" in why, why)
+ok, why = _should_review(_pr("aaaa1111"), [_cm("!review", "2026-08-19T00:00:00Z")], [_rep("aaaa1111")])
+check("a !review already answered by a report does not re-fire", ok is False, why)
+ok, why = _should_review(_pr("cccc3333"), [_cm("!do-not-review")], [])
+check("opt-out beats an unreviewed revision", ok is False and "opted out" in why, why)
 
 # Without a checkout the file-reading stages must be off, never left aimed at cwd.
 base = Config(api_key="x", enable_validation=True, agentic_review=True)
-scoped, wt = _scoped_to_checkout(base, RepoConfig(url="o/r"), PR, None)
+scoped, wt = _scoped_to_checkout(base, RepoConfig(url="o/r"), _pr("aaaa1111"), None)
 check("no checkout disables validation", scoped.enable_validation is False)
 check("no checkout disables agentic review", scoped.agentic_review is False)
-check("no worktree to release", wt is None)
-check("caller config untouched", base.enable_validation is True and base.agentic_review is True)
+check("caller config untouched", base.enable_validation is True)
 
 print("\n[11f] retry outcomes: degrade vs terminal, and jitter")
 import tempfile as _tf

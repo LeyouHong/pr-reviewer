@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ..constants import REPORT_FINGERPRINT
+from ..constants import report_marker
 from ..models import (
     LineState,
     OverallRating,
@@ -146,7 +146,7 @@ def build_inline_review(
         if r.overall_rating in (OverallRating.NEEDS_IMPROVEMENT, OverallRating.POOR)
     )
 
-    body_lines = [REPORT_FINGERPRINT, "# Code review report", ""]
+    body_lines = [report_marker(pr_review.head_sha), "# Code review report", ""]
     if pr_review.summary:
         body_lines += [f"**Summary**: {pr_review.summary}", ""]
     body_lines += [
@@ -180,6 +180,8 @@ def build_inline_review(
 
     body_lines += ["---", ""]
     diagnostics = [f"- Review id: {pr_review.cc_id}"]
+    if pr_review.head_sha:
+        diagnostics.append(f"- Reviewed commit: `{pr_review.head_sha}`")
     if commit:
         diagnostics.append(f"- Reviewer build: `{commit}`")
     body_lines += [

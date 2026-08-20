@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from ..constants import REPORT_FINGERPRINT
+from ..constants import report_marker
 from ..models import (
     CodeChangeInfo,
     OverallRating,
@@ -126,7 +126,7 @@ def to_markdown(pr_review: PullRequestReview, commit: str = "") -> str:
         in (OverallRating.NEEDS_IMPROVEMENT, OverallRating.POOR)
     )
 
-    lines = [REPORT_FINGERPRINT, "# Code review report", ""]
+    lines = [report_marker(pr_review.head_sha), "# Code review report", ""]
     if pr_review.summary:
         lines += [f"**Summary**: {pr_review.summary}", ""]
 
@@ -186,6 +186,8 @@ def to_markdown(pr_review: PullRequestReview, commit: str = "") -> str:
 
     lines += ["---", ""]
     diagnostics = [f"- Review id: {pr_review.cc_id}"]
+    if pr_review.head_sha:
+        diagnostics.append(f"- Reviewed commit: `{pr_review.head_sha}`")
     if commit:
         diagnostics.append(f"- Reviewer build: `{commit}`")
     degraded = [r.filepath for r in pr_review.file_reviews if r.degraded]

@@ -10,8 +10,16 @@ Skip / review decision, per PR:
 
 1. ``!do-not-review`` in any comment → skip forever.
 2. ``!review`` newer than the last posted report → force review.
-3. Report exists newer than the PR's last-update time → skip.
+3. A report already answers this head commit → skip.
 4. Otherwise → review.
+
+Rule 3 keys on the revision, not the clock. Under "review every push" a
+timestamp comparison loses a race that happens constantly: a push landing
+*while* a review runs produces a report created after the pull request's
+last-updated time, so the newer commit reads as already-reviewed and is never
+looked at. Asking whether a specific revision has a report is decidable at any
+moment and is what makes a retry — from a webhook redelivery, a crashed worker,
+or this sweep — safe to repeat.
 
 Cron itself is not our problem — a systemd timer or a crontab entry drives
 ``pr-reviewer scan`` at whatever cadence the operator prefers. Overlap is,
@@ -117,11 +125,24 @@ def _should_review(
     if trigger == "!review":
         return True, "explicit !review trigger"
 
-    updated_at = pr.get("updatedAt") or ""
-    if updated_at and _newest_report_after(reports, updated_at):
-        return False, f"already reviewed after last update ({updated_at})"
+    head = pr.get("headRefOid") or ""
+    if head and head in _reviewed_shas(reports):
+        return False, f"{head[:8]} already reviewed"
 
-    return True, "no fresh report"
+    if not head:
+        # Without a revision there is no idempotency key, and reviewing on a
+        # timestamp would double-post. Say so rather than guessing.
+        return False, "no head commit reported for this pull request"
+
+    return True, f"no report for {head[:8]}"
+
+
+def _reviewed_shas(reports: list[dict]) -> set[str]:
+    return {
+        sha
+        for sha in (github.parse_reviewed_sha(r.get("body") or "") for r in reports)
+        if sha
+    }
 
 
 def _newest_report_at(reports: list[dict]) -> str:

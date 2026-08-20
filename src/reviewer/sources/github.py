@@ -20,6 +20,9 @@ from ..models import CodeChangeInfo
 log = logging.getLogger(__name__)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_MARKER_SHA = re.compile(
+    re.escape(REPORT_FINGERPRINT) + r"\s+sha=([0-9a-fA-F]{7,40}|unknown)\b"
+)
 
 
 class GitHubError(RuntimeError):
@@ -72,9 +75,10 @@ def load_pull_request_raw(
         cc_description=meta.get("body") or "",
         source_branch=meta.get("headRefName") or "",
         target_branch=meta.get("baseRefName") or "",
+        head_sha=meta.get("headRefOid") or "",
         changes=parse_unified_diff(diff),
     )
-    return info, diff, meta.get("headRefOid") or ""
+    return info, diff, info.head_sha
 
 
 def load_pull_request(number: int, repo: str | None = None) -> CodeChangeInfo:
@@ -90,6 +94,41 @@ def _repo_slug(repo: str | None) -> str:
         return repo
     meta = json.loads(_gh("repo", "view", "--json", "nameWithOwner"))
     return meta["nameWithOwner"]
+
+
+def reviewed_shas(number: int, repo: str | None = None) -> set[str]:
+    """Revisions of this pull request that already carry a report.
+
+    The dedup key. A revision either has a report or it does not, which is
+    decidable at any moment and does not care when anything happened.
+    """
+    return {
+        sha
+        for sha in (
+            parse_reviewed_sha(item.get("body") or "")
+            for item in existing_report_comments(number, repo)
+        )
+        if sha
+    }
+
+
+def has_report_for(number: int, head_sha: str, repo: str | None = None) -> bool:
+    """True when ``head_sha`` has already been reviewed on this pull request."""
+    return bool(head_sha) and head_sha in reviewed_shas(number, repo)
+
+
+def parse_reviewed_sha(body: str) -> str | None:
+    """The revision a report answers, or ``None`` for a report predating this.
+
+    Reports written before the marker carried a sha stay findable and prunable
+    — they simply never satisfy a dedup check, so the revision they covered is
+    reviewed once more and then behaves.
+    """
+    match = _MARKER_SHA.search(body or "")
+    if not match:
+        return None
+    sha = match.group(1)
+    return None if sha == "unknown" else sha
 
 
 def existing_report_comments(number: int, repo: str | None = None) -> list[dict]:
