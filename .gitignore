@@ -6,9 +6,16 @@ __pycache__/
 dist/
 build/
 
-# Benchmark artifacts
+# Benchmark artifacts.
+#
+# The run directories hold per-PR findings; the root-level logs hold the file
+# paths, identifiers and behaviour of whatever repository was reviewed. Both
+# describe someone else's code, so neither belongs in this repository for the
+# same reason corpus.json does not.
 benchmark_runs/
 runs/
+runs-*.log
+*.log
 
 # Corpus and candidate findings.
 #
