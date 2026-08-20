@@ -18,6 +18,11 @@ from . import constants
 class Config:
     # Model / provider
     api_key: str = ""
+    # Names the endpoint's capabilities — how it can be made to honour a schema,
+    # how much context it has, which vendor fields it understands. See
+    # provider/profiles.py; swapping to a local server is this one flag plus a
+    # base_url.
+    provider_profile: str = "deepseek"
     base_url: str = constants.DEFAULT_BASE_URL
     model: str = constants.DEFAULT_MODEL
     temperature: float = 0.0
@@ -66,14 +71,41 @@ class Config:
         for name, value in overrides.items():
             if value is not None:
                 setattr(cfg, name, value)
-        return cfg
+        return cfg.apply_profile_defaults()
+
+    def apply_profile_defaults(self) -> "Config":
+        """Let the named profile supply endpoint defaults it knows.
+
+        Runs after any overrides, not during ``__init__`` — ``from_env`` sets
+        fields by assignment, so a profile resolved at construction time would
+        be the default one every time.
+
+        An explicit base URL or model still wins: the profile describes what a
+        *kind* of server can do, not where yours happens to live.
+        """
+        from .provider.profiles import resolve
+
+        profile = resolve(self.provider_profile)
+        if self.base_url == constants.DEFAULT_BASE_URL:
+            self.base_url = profile.base_url
+        if self.model == constants.DEFAULT_MODEL:
+            self.model = profile.default_model
+        return self
 
     def require_api_key(self) -> str:
-        if not self.api_key:
-            raise SystemExit(
-                "DEEPSEEK_API_KEY is not set. Export it, or pass --api-key."
-            )
-        return self.api_key
+        """A local server usually needs no key; a hosted one always does.
+
+        Local endpoints still want a placeholder because the OpenAI client
+        refuses to construct without one.
+        """
+        if self.api_key:
+            return self.api_key
+        if "localhost" in self.base_url or "127.0.0.1" in self.base_url:
+            return "local"
+        raise SystemExit(
+            f"No API key for {self.base_url}. Export DEEPSEEK_API_KEY, or pass "
+            "--api-key."
+        )
 
 
 def _default_resources() -> Path:

@@ -22,6 +22,16 @@ from reviewer.models import QualifyVerdict
 
 FAILURES = []
 
+
+def _raises(fn, exc_type):
+    try:
+        fn()
+    except exc_type:
+        return True
+    except Exception:
+        return False
+    return False
+
 def check(name, cond, detail=""):
     if cond:
         print(f"  PASS  {name}")
@@ -195,6 +205,61 @@ for text, want, billing in cases:
     got = classify(RuntimeError(text))
     check(f"{text[:34]!r} -> {want.value}", got is want, got.value)
     check(f"  billing flag == {billing}", is_billing_failure(RuntimeError(text)) is billing)
+
+print("\n[6c] provider profiles: one flag swaps the endpoint")
+from reviewer.provider.profiles import PROFILES, resolve
+from reviewer.provider.client import DeepSeekClient, _with_schema
+from reviewer.provider.strict_schema import harden_schema
+
+class _Cfg(Config):
+    pass
+
+check("unknown profile is refused, not defaulted",
+      _raises(lambda: resolve("gpt-9"), ValueError))
+check("deepseek keeps its vendor field", PROFILES["deepseek"].extra_body == {"thinking": {"type": "disabled"}})
+for name in ("vllm", "ollama", "llamacpp", "generic"):
+    check(f"{name} sends no vendor fields", PROFILES[name].extra_body == {},
+          PROFILES[name].extra_body)
+check("a small window gets a small chunk budget",
+      PROFILES["ollama"].chunk_budget < PROFILES["deepseek"].chunk_budget // 50)
+check("chunk budget leaves room for rules and response",
+      PROFILES["ollama"].chunk_budget < PROFILES["ollama"].context_tokens)
+
+# The request body must differ per strategy — that is the whole point.
+def _body(profile_name):
+    cfg = Config.from_env(api_key="x", provider_profile=profile_name)
+    client = DeepSeekClient.__new__(DeepSeekClient)
+    client._config = cfg
+    client._profile = resolve(profile_name)
+    client._extra_body = dict(client._profile.extra_body)
+    return client._structured_request("p", LLMFileChangeReview, "submit", "d")
+
+b = _body("deepseek")
+check("strict_tool forces the function call", b["tool_choice"]["function"]["name"] == "submit")
+check("strict_tool carries the vendor field", "thinking" in b["extra_body"])
+b = _body("openai")
+check("json_schema uses response_format", b["response_format"]["type"] == "json_schema")
+check("json_schema sends no tools", "tools" not in b)
+b = _body("vllm")
+check("guided_json goes in extra_body", "guided_json" in b["extra_body"])
+check("guided_json sends no response_format", "response_format" not in b)
+b = _body("llamacpp")
+check("json_object asks only for valid json", b["response_format"]["type"] == "json_object")
+check("json_object puts the schema in the prompt", "schema" in b["messages"][0]["content"].lower())
+b = _body("generic")
+check("prompt strategy constrains nothing", "response_format" not in b and "tools" not in b)
+check("prompt strategy still states the schema",
+      "Output the JSON object and nothing else" in b["messages"][0]["content"])
+
+check("schema in the prompt is self-contained",
+      "$defs" not in _with_schema("p", harden_schema(LLMFileChangeReview)))
+
+# A local endpoint needs no key; a hosted one must not silently proceed without.
+check("localhost needs no key",
+      Config.from_env(provider_profile="ollama").require_api_key() == "local")
+check("a hosted endpoint without a key fails loudly",
+      _raises(lambda: Config(api_key="", base_url="https://api.example.com/v1").require_api_key(),
+              SystemExit))
 
 print("\n[7] json repair")
 check("fenced json recovered", loads_with_recovery('```json\n{"a": 1}\n```')["a"] == 1)

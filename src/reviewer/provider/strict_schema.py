@@ -96,24 +96,33 @@ def _harden(node: Any) -> None:
             _harden(sub)
 
 
+def harden_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """The inlined, strict-shaped JSON schema for ``model``.
+
+    Shared by every enforcement strategy: a response_format schema, a vLLM
+    guided_json blob, and the block pasted into a prompt all want the same
+    self-contained document.
+    """
+    schema = model.model_json_schema()
+    defs = schema.pop("$defs", {})
+    schema = _inline_refs(schema, defs)
+    schema.pop("title", None)
+    _harden(schema)
+    return schema
+
+
 def build_strict_tool(
     model: type[BaseModel],
     name: str,
     description: str,
 ) -> dict[str, Any]:
     """Publish ``model`` as a strict function tool definition."""
-    schema = model.model_json_schema()
-    defs = schema.pop("$defs", {})
-    schema = _inline_refs(schema, defs)
-    # Pydantic emits a top-level "title"/"description"; harmless but noisy.
-    schema.pop("title", None)
-    _harden(schema)
     return {
         "type": "function",
         "function": {
             "name": name,
             "description": description,
             "strict": True,
-            "parameters": schema,
+            "parameters": harden_schema(model),
         },
     }

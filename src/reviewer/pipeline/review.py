@@ -24,6 +24,7 @@ from ..models import (
 from ..policy import PolicyRouter
 from ..prompt import PromptLibrary, file_changes_block, render
 from ..provider import ProviderClient
+from ..provider.profiles import resolve
 from ..tools.fs_tools import FileSystemTools
 from ..tools.researcher import Researcher, build_dispatch, extended_tool_specs
 
@@ -50,6 +51,7 @@ class FileReviewer:
         # The researcher is only reached when the outer reviewer calls the
         # ``research_codebase`` tool, so it costs nothing on non-agentic paths
         # even though it is constructed eagerly.
+        self._chunk_budget = resolve(config.provider_profile).chunk_budget
         self._researcher = Researcher(client, library, self._tools)
         self._agent_tool_specs = extended_tool_specs()
 
@@ -64,7 +66,9 @@ class FileReviewer:
         )
         general = self._library.rules("/rules/general.md")
 
-        chunks = chunk_file_change(change)
+        # The budget belongs to the endpoint: chunking is a formality at a
+        # million tokens and load-bearing at eight thousand.
+        chunks = chunk_file_change(change, budget=self._chunk_budget)
         all_comments: list[ReviewComment] = []
         all_oos: list[ReviewComment] = []
         summaries: list[str] = []

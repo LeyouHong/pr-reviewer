@@ -24,7 +24,8 @@ from .. import constants
 from ..config import Config
 from ..exception_handling import ContentError, DegenerateOutputError, with_retries
 from .json_repair import clamp_and_revalidate, loads_with_recovery
-from .strict_schema import build_strict_tool
+from .profiles import ProviderProfile, resolve
+from .strict_schema import build_strict_tool, harden_schema
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +52,15 @@ class AgentRunResult:
 
 
 class DeepSeekClient:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, profile: ProviderProfile | None = None):
         self._config = config
-        self._extra_body: dict[str, Any] = (
-            {} if config.thinking else {"thinking": {"type": "disabled"}}
-        )
+        self._profile = profile or resolve(config.provider_profile)
+        # Vendor fields come from the profile, never from a hardcoded default:
+        # a local server that has never heard of `thinking` should not be sent
+        # one, and a server that rejects unknown fields would 400 on every call.
+        self._extra_body: dict[str, Any] = dict(self._profile.extra_body)
+        if config.thinking:
+            self._extra_body.pop("thinking", None)
         self._client = OpenAI(
             api_key=config.require_api_key(),
             base_url=config.base_url,
@@ -100,45 +105,91 @@ class DeepSeekClient:
         temperature: float | None = None,
         label: str = "complete_structured",
     ) -> M:
-        """Force a strict function call and validate its arguments.
+        """Return ``schema``-shaped output, enforced as strongly as the endpoint allows.
 
-        Strict function schemas are the only grammar-enforced output surface
-        DeepSeek offers, so the result model is published as a tool and the
-        model is required to call it via ``tool_choice``.
+        The strategy is a property of the endpoint, not of the caller — see
+        :mod:`provider.profiles`. Whatever the endpoint promises, the response
+        is still parsed and validated on the way back: an ignored constraint
+        looks exactly like an honoured one until you check.
         """
-        tool = build_strict_tool(schema, tool_name, tool_description)
+        strategy = self._profile.enforcement
+        request = self._structured_request(prompt, schema, tool_name, tool_description)
 
         def _call() -> M:
             resp = self._client.chat.completions.create(
                 model=self._config.model,
-                messages=[{"role": "user", "content": prompt}],
-                tools=[tool],
-                tool_choice={"type": "function", "function": {"name": tool_name}},
                 temperature=(
                     self._config.temperature if temperature is None else temperature
                 ),
-                extra_body=self._extra_body,
+                **request,
             )
             message = resp.choices[0].message
-            calls = message.tool_calls or []
-            if not calls:
-                # Fall back to whatever prose came back, in case the model
-                # answered inline despite tool_choice.
-                if message.content:
-                    payload = loads_with_recovery(message.content)
-                    return clamp_and_revalidate(payload, schema)
-                raise DegenerateOutputError(f"{label}: no tool call and no content")
-
-            raw = calls[0].function.arguments or ""
-            if not raw.strip():
-                raise DegenerateOutputError(f"{label}: empty tool arguments")
+            raw = self._structured_payload(message, tool_name, strategy, label)
             try:
                 payload = loads_with_recovery(raw)
             except json.JSONDecodeError as exc:
-                raise ContentError(f"{label}: unparseable tool arguments") from exc
+                raise ContentError(f"{label}: unparseable structured output") from exc
             return clamp_and_revalidate(payload, schema)
 
         return with_retries(_call, label=label)
+
+    # -- structured-output strategies --------------------------------------
+
+    def _structured_request(
+        self, prompt: str, schema: type[M], tool_name: str, tool_description: str
+    ) -> dict[str, Any]:
+        """Build the request body for this endpoint's enforcement strategy."""
+        strategy = self._profile.enforcement
+        extra = dict(self._extra_body)
+        hardened = harden_schema(schema)
+
+        if strategy == "strict_tool":
+            return {
+                "messages": [{"role": "user", "content": prompt}],
+                "tools": [build_strict_tool(schema, tool_name, tool_description)],
+                "tool_choice": {"type": "function", "function": {"name": tool_name}},
+                "extra_body": extra,
+            }
+        if strategy == "json_schema":
+            return {
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": tool_name, "strict": True, "schema": hardened},
+                },
+                "extra_body": extra,
+            }
+        if strategy == "guided_json":
+            return {
+                "messages": [{"role": "user", "content": prompt}],
+                "extra_body": {**extra, "guided_json": hardened},
+            }
+
+        # json_object and prompt both need the schema in the prompt: the former
+        # guarantees only that the result parses, the latter not even that.
+        body = {"messages": [{"role": "user", "content": _with_schema(prompt, hardened)}],
+                "extra_body": extra}
+        if strategy == "json_object":
+            body["response_format"] = {"type": "json_object"}
+        return body
+
+    @staticmethod
+    def _structured_payload(
+        message: Any, tool_name: str, strategy: str, label: str
+    ) -> str:
+        """Pull the raw JSON text out of whatever shape the response took."""
+        calls = getattr(message, "tool_calls", None) or []
+        if strategy == "strict_tool" and calls:
+            raw = calls[0].function.arguments or ""
+            if not raw.strip():
+                raise DegenerateOutputError(f"{label}: empty tool arguments")
+            return raw
+        # A model that answered in prose despite tool_choice, or any of the
+        # content-returning strategies.
+        content = (getattr(message, "content", None) or "").strip()
+        if not content:
+            raise DegenerateOutputError(f"{label}: no structured output returned")
+        return content
 
     def run_agent_structured(
         self,
@@ -333,3 +384,19 @@ class DeepSeekClient:
             turns_used=max_turns,
             turn_limit_reached=True,
         )
+
+
+def _with_schema(prompt: str, schema: dict[str, Any]) -> str:
+    """Append the schema to a prompt for endpoints that enforce nothing.
+
+    Naming the failure explicitly ("output the object and nothing else") is the
+    only lever left when the server will not constrain generation, and it costs
+    nothing on endpoints that would have complied anyway.
+    """
+    return (
+        f"{prompt}\n\n"
+        "Return a single JSON object matching this schema exactly, with no "
+        "prose, explanation, or markdown fence before or after it:\n\n"
+        f"{json.dumps(schema, ensure_ascii=False)}\n\n"
+        "Output the JSON object and nothing else."
+    )

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .config import Config
+from .provider.profiles import PROFILES
 from .pipeline.orchestrator import ReviewPipeline
 from .benchmark.capture import capture
 from .benchmark.calibration import run_calibration
@@ -35,6 +36,14 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--base-url", default=None)
+    parser.add_argument(
+        "--provider",
+        choices=sorted(PROFILES),
+        default=None,
+        help="Endpoint capability profile: how the server can be made to honour "
+             "a schema, how much context it has, which vendor fields it takes. "
+             "Use 'generic' for an unknown local server.",
+    )
     parser.add_argument(
         "--ensemble",
         type=int,
@@ -82,6 +91,7 @@ def _config_from(args: argparse.Namespace) -> Config:
         model=args.model,
         api_key=args.api_key,
         base_url=args.base_url,
+        provider_profile=args.provider,
         agentic_review=True if agentic else None,
         ensemble_size=ensemble,
         enable_validation=False if args.no_validate else None,
