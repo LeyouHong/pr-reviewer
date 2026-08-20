@@ -104,6 +104,58 @@ GitHub PR / git diff
 
 不想每次推送都触发，或者想覆盖多个仓库，用 `scan` 子命令配 cron——见上一节。两者可以共存：Actions 管热路径，cron 兜底捡漏。
 
+## 服务器部署：每次推送都审，且只审一次
+
+三个进程，各司其职：
+
+```
+GitHub ──webhook──> serve ──入队──> 队列(磁盘) ──> worker ──> 发帖
+                      │                            ↑
+                      └─ 立刻返回 202               │
+         cron ──> scan ────────对账、补漏───────────┘
+```
+
+```bash
+export DEEPSEEK_API_KEY=sk-xxx
+export GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)
+
+pr-reviewer serve  --queue /var/lib/pr-reviewer/queue --host 0.0.0.0 --port 8787
+pr-reviewer worker --queue /var/lib/pr-reviewer/queue --v2 --repo-path /srv/checkouts/api
+pr-reviewer queue  --queue /var/lib/pr-reviewer/queue      # 看积压
+```
+
+GitHub 仓库 Settings → Webhooks 添加 `https://你的域名/webhook`，content type 选
+`application/json`，Secret 填上面那个，事件只勾 **Pull requests**。
+
+### 为什么是三个进程
+
+**webhook 必须在秒级返回**——GitHub 10 秒超时，而一次审查要几分钟。`serve` 只做验签、
+入队、返回 202。
+
+**队列必须落盘**。worker 崩了、机器重启了，任务不能蒸发。用的是目录 + 原子 rename：
+`os.replace` 保证两个 worker 不会认领同一个任务，任务文件是可读 JSON，运维 `ls` 就能
+看积压，也没有 schema 迁移问题。
+
+**cron 扫描是对账循环，不是主力**。webhook 会丢投（服务重启、网络抖动），扫描把丢的
+捡回来。webhook 正常时它几乎什么都不做——所有任务都被去重挡掉了。15~30 分钟一次足够。
+
+### 保证来自哪里
+
+**幂等键是 `(仓库, PR 号, head commit)`**。每份报告把它回答的 commit 写进标记，判据是
+「这个 commit 有没有报告」。所以 webhook 重投、worker 重试、扫描重复发现——三条路径都
+收敛到每个修订一次审查。
+
+没有这一条，你加的每个重试机制都会变成重复发帖的来源。
+
+### 三个行为值得知道
+
+**连推三次只审最后一次。** 新修订入队时会丢掉同一 PR 更早的 *待处理* 任务。已被认领的
+不动——那正在跑，从外部取消会让 worker 给一个不存在的任务写结果。
+
+**草稿 PR 不审**，直到标记为 ready。
+
+**余额耗尽会停下并保住任务**，充值后重启 worker 原地继续，不需要重新触发。
+
 ## 定时扫描
 
 `scan` 子命令按 `settings.json` 遍历仓库，决定哪些开放 PR 需要审查。示例见 `settings.example.json`。

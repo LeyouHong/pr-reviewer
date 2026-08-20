@@ -17,6 +17,9 @@ from .benchmark.gold import format_worklist, label_run
 from .benchmark.runner import run_benchmark
 from .pipeline.inline import build_inline_review
 from .pipeline.scan import LockHeld, scan_repos
+from .serve.queue import JobQueue
+from .serve.webhook import serve as serve_webhook
+from .serve.worker import drain
 from .settings import load_settings
 from .sources import github, local_git
 
@@ -239,6 +242,29 @@ def cmd_calibrate_matcher(args: argparse.Namespace) -> int:
     return 0 if all(r.passed for r in results) else 1
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    secret = args.secret or os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+    serve_webhook(
+        JobQueue(args.queue), host=args.host, port=args.port,
+        secret=secret, path=args.path,
+    )
+    return 0
+
+
+def cmd_worker(args: argparse.Namespace) -> int:
+    config = _config_from(args)
+    queue = JobQueue(args.queue)
+    handled = drain(config, queue, inline=not args.no_inline, once=args.once)
+    print(f"worker: handled {handled} job(s)", file=sys.stderr)
+    return 0
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    depth = JobQueue(args.queue).depth()
+    print("  ".join(f"{lane}={n}" for lane, n in depth.items()))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pr-reviewer", description="LLM code review agent (DeepSeek V4 Pro)"
@@ -336,6 +362,32 @@ def main(argv: list[str] | None = None) -> int:
     cal.add_argument("--cases", type=Path, default=Path("tests/calibration_cases.py"))
     _common(cal)
     cal.set_defaults(func=cmd_calibrate_matcher)
+
+    srv = sub.add_parser("serve", help="Receive GitHub webhooks and queue reviews")
+    srv.add_argument("--queue", type=Path, default=Path(".pr-reviewer/queue"))
+    srv.add_argument("--host", default="127.0.0.1")
+    srv.add_argument("--port", type=int, default=8787)
+    srv.add_argument("--path", default="/webhook")
+    srv.add_argument(
+        "--secret", default=None,
+        help="Webhook HMAC secret (or GITHUB_WEBHOOK_SECRET). Without one every "
+             "caller is trusted — required before exposing the port.",
+    )
+    srv.add_argument("-v", "--verbose", action="store_true")
+    srv.set_defaults(func=cmd_serve)
+
+    wk = sub.add_parser("worker", help="Review queued revisions and post the reports")
+    wk.add_argument("--queue", type=Path, default=Path(".pr-reviewer/queue"))
+    wk.add_argument("--once", action="store_true", help="Drain and exit.")
+    wk.add_argument("--no-inline", action="store_true",
+                    help="Post one aggregated comment instead of a line-anchored review.")
+    _common(wk)
+    wk.set_defaults(func=cmd_worker)
+
+    qd = sub.add_parser("queue", help="Show queue depth")
+    qd.add_argument("--queue", type=Path, default=Path(".pr-reviewer/queue"))
+    qd.add_argument("-v", "--verbose", action="store_true")
+    qd.set_defaults(func=cmd_queue)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)

@@ -5,3 +5,4 @@ PY="${PY:-.venv/bin/python}"
 "$PY" tests/smoke_offline.py
 "$PY" tests/smoke_pipeline.py | tail -1
 "$PY" tests/smoke_benchmark.py | tail -1
+"$PY" tests/smoke_serve.py | tail -1

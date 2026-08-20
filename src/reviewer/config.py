@@ -57,6 +57,9 @@ class Config:
     # before a new one lands, so a long-lived PR does not accumulate a wall of
     # superseded reviews.
     max_reviews: int = 5
+    # Stamped into every posted report so a comment can be traced back to the
+    # reviewer build that wrote it.
+    build_stamp: str = ""
 
     # Output
     post: bool = False
@@ -67,7 +70,8 @@ class Config:
     def from_env(cls, **overrides) -> "Config":
         key = os.environ.get("DEEPSEEK_API_KEY", "")
         base = os.environ.get("DEEPSEEK_BASE_URL", constants.DEFAULT_BASE_URL)
-        cfg = cls(api_key=key, base_url=base)
+        cfg = cls(api_key=key, base_url=base,
+                  build_stamp=os.environ.get("COMMIT_HASH", ""))
         for name, value in overrides.items():
             if value is not None:
                 setattr(cfg, name, value)
