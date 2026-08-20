@@ -18,6 +18,7 @@ from .benchmark.runner import run_benchmark
 from .pipeline.inline import build_inline_review
 from .pipeline.scan import LockHeld, scan_repos
 from .serve.queue import JobQueue
+from .sources.checkout import CheckoutProvider
 from .serve.webhook import serve as serve_webhook
 from .serve.worker import drain
 from .settings import load_settings
@@ -254,7 +255,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_worker(args: argparse.Namespace) -> int:
     config = _config_from(args)
     queue = JobQueue(args.queue)
-    handled = drain(config, queue, inline=not args.no_inline, once=args.once)
+    # Each job gets a worktree at its own head commit. Without a settings file
+    # naming a clone per repository there is nowhere to cut one from, so the
+    # file-reading stages switch off rather than read the worker's cwd.
+    checkouts = (
+        CheckoutProvider.from_settings(load_settings(args.settings))
+        if args.settings and args.settings.exists()
+        else CheckoutProvider()
+    )
+    handled = drain(
+        config, queue, inline=not args.no_inline, once=args.once, checkouts=checkouts
+    )
     print(f"worker: handled {handled} job(s)", file=sys.stderr)
     return 0
 
@@ -379,6 +390,12 @@ def main(argv: list[str] | None = None) -> int:
     wk = sub.add_parser("worker", help="Review queued revisions and post the reports")
     wk.add_argument("--queue", type=Path, default=Path(".pr-reviewer/queue"))
     wk.add_argument("--once", action="store_true", help="Drain and exit.")
+    wk.add_argument(
+        "--settings", type=Path, default=Path("settings.json"),
+        help="Names a local clone per repository. Each job is reviewed against "
+             "a worktree at its own head commit; without this the stages that "
+             "open files are disabled rather than pointed at the wrong tree.",
+    )
     wk.add_argument("--no-inline", action="store_true",
                     help="Post one aggregated comment instead of a line-anchored review.")
     _common(wk)

@@ -22,6 +22,7 @@ from pathlib import Path
 from ..config import Config
 from ..exception_handling import DegradedCall, is_billing_failure
 from ..sources import github
+from ..sources.checkout import CheckoutProvider
 from .queue import Job, JobQueue
 
 log = logging.getLogger(__name__)
@@ -31,8 +32,21 @@ log = logging.getLogger(__name__)
 DEFAULT_MAX_ATTEMPTS = 3
 
 
-def review_job(config: Config, job: Job, *, inline: bool = True) -> str:
-    """Review one revision and post the report. Returns a short outcome."""
+def review_job(
+    config: Config,
+    job: Job,
+    *,
+    inline: bool = True,
+    checkouts: CheckoutProvider | None = None,
+) -> str:
+    """Review one revision and post the report. Returns a short outcome.
+
+    ``checkouts`` pins the file-reading stages to this job's own commit. A
+    worker draining a queue is the case where a single fixed ``repo_path`` is
+    most obviously wrong: consecutive jobs are different pull requests, often
+    different repositories, and the checkout that was right for one is wrong
+    for the next.
+    """
     if github.has_report_for(job.number, job.head_sha, repo=job.repo):
         return "already reviewed"
 
@@ -49,8 +63,10 @@ def review_job(config: Config, job: Job, *, inline: bool = True) -> str:
     if not info.changes:
         return "no reviewable changes"
 
-    pipeline = ReviewPipeline(config)
-    review = pipeline.run(info)
+    provider = checkouts or CheckoutProvider()
+    with provider.pinned(config, job.repo, job.number, job.head_sha) as pinned:
+        pipeline = ReviewPipeline(pinned)
+        review = pipeline.run(info)
 
     keep = max(config.max_reviews - 1, 0)
     github.prune_old_reports(job.number, keep=keep, repo=job.repo)
@@ -74,7 +90,8 @@ def review_job(config: Config, job: Job, *, inline: bool = True) -> str:
 
 
 def run_once(config: Config, queue: JobQueue, *, inline: bool = True,
-             max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> bool:
+             max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+             checkouts: CheckoutProvider | None = None) -> bool:
     """Handle at most one job. Returns whether there was one."""
     claimed = queue.claim()
     if claimed is None:
@@ -82,7 +99,7 @@ def run_once(config: Config, queue: JobQueue, *, inline: bool = True,
     job, path = claimed
 
     try:
-        outcome = review_job(config, job, inline=inline)
+        outcome = review_job(config, job, inline=inline, checkouts=checkouts)
         log.info("worker: %s — %s", job.label, outcome)
         queue.complete(job, path)
     except SystemExit as exc:
@@ -107,21 +124,26 @@ def run_once(config: Config, queue: JobQueue, *, inline: bool = True,
 
 
 def drain(config: Config, queue: JobQueue, *, inline: bool = True,
-          idle_sleep_s: float = 5.0, once: bool = False) -> int:
+          idle_sleep_s: float = 5.0, once: bool = False,
+          checkouts: CheckoutProvider | None = None) -> int:
     """Work the queue until it is empty (``once``) or forever.
 
     Polls rather than watches: a five-second wait on an empty queue is
     invisible next to a review, and it removes a dependency on filesystem
     notification behaving the same on every platform.
     """
+    provider = checkouts or CheckoutProvider()
     handled = 0
-    while True:
-        if run_once(config, queue, inline=inline):
-            handled += 1
-            continue
-        if once:
-            return handled
-        time.sleep(idle_sleep_s)
+    try:
+        while True:
+            if run_once(config, queue, inline=inline, checkouts=provider):
+                handled += 1
+                continue
+            if once:
+                return handled
+            time.sleep(idle_sleep_s)
+    finally:
+        provider.cleanup()
 
 
 __all__ = ["DEFAULT_MAX_ATTEMPTS", "drain", "review_job", "run_once"]

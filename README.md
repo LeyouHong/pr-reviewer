@@ -120,7 +120,7 @@ export DEEPSEEK_API_KEY=sk-xxx
 export GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)
 
 pr-reviewer serve  --queue /var/lib/pr-reviewer/queue --host 0.0.0.0 --port 8787
-pr-reviewer worker --queue /var/lib/pr-reviewer/queue --v2 --repo-path /srv/checkouts/api
+pr-reviewer worker --queue /var/lib/pr-reviewer/queue --v2 --settings settings.json
 pr-reviewer queue  --queue /var/lib/pr-reviewer/queue      # 看积压
 ```
 
@@ -138,6 +138,14 @@ GitHub 仓库 Settings → Webhooks 添加 `https://你的域名/webhook`，cont
 
 **cron 扫描是对账循环，不是主力**。webhook 会丢投（服务重启、网络抖动），扫描把丢的
 捡回来。webhook 正常时它几乎什么都不做——所有任务都被去重挡掉了。15~30 分钟一次足够。
+
+### worker 读的是哪份代码
+
+`--settings` 里每个仓库的 `checkout` 指向一份本地 clone。worker 处理每个任务时，在**那个任务自己的 head commit** 上切一个 detached worktree，跑完释放。
+
+这不是可选的讲究。worker 消费的连续两个任务往往是不同 PR、甚至不同仓库——**对上一个任务正确的检出，对下一个就是错的**。而验证器读错代码不会报错，它会对毫不相干的代码给出自信的裁决。
+
+没配 `checkout` 的仓库，读文件的阶段会被关掉并打警告，而不是退回读 worker 的当前目录。
 
 ### 保证来自哪里
 

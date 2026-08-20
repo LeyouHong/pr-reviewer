@@ -93,6 +93,57 @@ check("a payload without a head sha is ignored, not guessed",
 j = job_from_payload(ev("synchronize"))
 check("the job records why it exists", j.reason == "webhook:synchronize", j.reason)
 
+print("\n[checkout] each job reads the revision it judges")
+import subprocess
+from reviewer.config import Config
+from reviewer.sources.checkout import CheckoutProvider
+
+def _git(repo, *a):
+    return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, check=True).stdout
+
+clone = Path(tempfile.mkdtemp()) / "repo"
+clone.mkdir()
+_git(clone, "init", "-q", "-b", "main")
+_git(clone, "config", "user.email", "t@t"); _git(clone, "config", "user.name", "t")
+(clone / "a.txt").write_text("first\n")
+_git(clone, "add", "-A"); _git(clone, "commit", "-qm", "first")
+first = _git(clone, "rev-parse", "HEAD").strip()
+(clone / "a.txt").write_text("second\n")
+_git(clone, "add", "-A"); _git(clone, "commit", "-qm", "second")
+second = _git(clone, "rev-parse", "HEAD").strip()
+
+base = Config(api_key="x", enable_validation=True, agentic_review=True)
+
+# An unconfigured repository must not fall back to the process cwd.
+with CheckoutProvider().pinned(base, "o/unknown", 1, first) as cfg:
+    check("no clone disables validation", cfg.enable_validation is False)
+    check("no clone disables agentic review", cfg.agentic_review is False)
+    check("no clone leaves repo_path untouched", cfg.repo_path == base.repo_path)
+
+provider = CheckoutProvider({"o/r": clone})
+try:
+    with provider.pinned(base, "o/r", 7, first) as cfg:
+        check("a configured repo keeps validation on", cfg.enable_validation is True)
+        check("the worktree holds the job's own revision",
+              (cfg.repo_path / "a.txt").read_text().strip() == "first",
+              (cfg.repo_path / "a.txt").read_text())
+        held = cfg.repo_path
+    check("the worktree is released when the job ends", not held.exists())
+
+    # The next job is a different revision — the whole reason a fixed
+    # repo_path is wrong for a queue worker.
+    with provider.pinned(base, "o/r", 8, second) as cfg:
+        check("a later job sees its own revision, not the previous one",
+              (cfg.repo_path / "a.txt").read_text().strip() == "second")
+
+    with provider.pinned(base, "o/r", 9, "0" * 40) as cfg:
+        check("an unknown commit degrades instead of guessing",
+              cfg.enable_validation is False and cfg.agentic_review is False)
+finally:
+    provider.cleanup()
+check("cleanup leaves no worktrees behind",
+      "worktree" not in _git(clone, "worktree", "list").replace(str(clone), ""))
+
 print()
 if F:
     print(f"{len(F)} FAILED: {F}"); sys.exit(1)
