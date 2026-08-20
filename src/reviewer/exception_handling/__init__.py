@@ -16,9 +16,10 @@ from .policy import (
     RetryPolicy,
     with_retries,
 )
-from .routing import classify, is_billing_failure
+from .routing import classify, is_billing_failure, looks_like_usage_limit
 from .types import (
     DegradedCall,
+    UsageLimitError,
     BillingError,
     ContentError,
     DegenerateOutputError,
@@ -35,6 +36,8 @@ __all__ = [
     "DegenerateOutputError",
     "ErrorKind",
     "DegradedCall",
+    "UsageLimitError",
+    "looks_like_usage_limit",
     "NeverTerminatePolicy",
     "Outcome",
     "OutcomeKind",

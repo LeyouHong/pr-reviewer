@@ -13,6 +13,7 @@ from .types import (
     ContentError,
     DegenerateOutputError,
     ErrorKind,
+    UsageLimitError,
 )
 
 _MAX_CHAIN_DEPTH = 5
@@ -37,6 +38,18 @@ _CAPACITY_MARKERS = (
     "too many requests",
     "429",
     "concurrency",
+)
+
+# A subscription window is a capacity wait, but a long one: seconds of backoff
+# re-hit the same wall. Matched before the generic capacity markers so the
+# caller sees UsageLimitError and can sleep until the window actually reopens.
+_USAGE_LIMIT_MARKERS = (
+    "usage limit reached",
+    "you've reached your usage limit",
+    "approaching your usage limit",
+    "5-hour limit",
+    "weekly limit",
+    "resets at",
 )
 
 # Checked before the capacity markers: these never clear on their own.
@@ -77,6 +90,8 @@ def classify(exc: BaseException) -> ErrorKind:
 
         if isinstance(link, BillingError):
             return ErrorKind.FATAL
+        if isinstance(link, UsageLimitError):
+            return ErrorKind.CAPACITY
 
         name = type(link).__name__.lower()
         text = str(link).lower()
@@ -108,3 +123,9 @@ def is_billing_failure(exc: BaseException) -> bool:
         if any(m in str(link).lower() for m in _BILLING_MARKERS):
             return True
     return False
+
+
+def looks_like_usage_limit(text: str) -> bool:
+    """True when provider output reads as an exhausted subscription window."""
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _USAGE_LIMIT_MARKERS)

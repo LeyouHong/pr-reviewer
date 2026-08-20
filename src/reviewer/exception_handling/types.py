@@ -61,6 +61,33 @@ class DegradedCall(RuntimeError):
         self.attempts = attempts
 
 
+class UsageLimitError(RuntimeError):
+    """A subscription's usage window is exhausted.
+
+    Neither a rate limit nor a billing failure, and mishandled as either it
+    wrecks a long run: backing off for seconds re-hits a wall that only clears
+    on the hour, and failing outright throws away a sweep that would have
+    resumed by itself. The window reset is the whole point, so it travels with
+    the error — a caller that knows when the wall lifts can sleep exactly that
+    long and continue.
+
+    ``resets_at`` is a Unix timestamp when the provider told us one, else None,
+    in which case the caller falls back to its own conservative wait.
+    """
+
+    def __init__(self, message: str, *, resets_at: float | None = None):
+        super().__init__(message)
+        self.resets_at = resets_at
+
+    def seconds_remaining(self, now: float | None = None) -> float | None:
+        """Seconds until the window reopens, or ``None`` when unknown."""
+        if self.resets_at is None:
+            return None
+        import time as _time
+
+        return max(self.resets_at - (now if now is not None else _time.time()), 0.0)
+
+
 @dataclass(frozen=True)
 class Verdict:
     """Classifier output: the kind plus a short evidence tag for logs."""

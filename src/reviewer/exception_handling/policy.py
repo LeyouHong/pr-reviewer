@@ -29,7 +29,7 @@ from typing import Callable, TypeVar
 from .. import constants
 from .backoff import exponential_backoff, fixed_backoff, with_jitter
 from .routing import classify
-from .types import DegradedCall, ErrorKind
+from .types import DegradedCall, ErrorKind, UsageLimitError
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,26 @@ T = TypeVar("T")
 
 # A re-issue draws a new seed, so a collapse is worth another attempt.
 _TRANSIENT = frozenset({ErrorKind.TRANSPORT, ErrorKind.CAPACITY, ErrorKind.DEGENERATE})
+
+
+def _window_wait(exc: BaseException | None) -> float | None:
+    """Seconds to wait when the failure is a subscription window, else None.
+
+    A usage window reopens on a schedule the provider knows and we do not, so
+    when it tells us, that timestamp beats every backoff curve: waiting thirty
+    seconds re-hits a wall that lifts in two hours, and giving up throws away a
+    sweep that would have resumed on its own. Ten seconds of slack absorbs
+    clock skew, and an unknown reset falls through to the normal curve rather
+    than inventing a duration.
+    """
+    if exc is None:
+        return None
+    for link in (exc, exc.__cause__, exc.__context__):
+        if isinstance(link, UsageLimitError):
+            remaining = link.seconds_remaining()
+            if remaining is not None:
+                return remaining + 10.0
+    return None
 
 
 class OutcomeKind(enum.Enum):
@@ -101,7 +121,10 @@ class BoundedRetryPolicy(RetryPolicy):
         self._capacity_wait = capacity_backoff_s
         self._used: dict[str, dict[ErrorKind, int]] = {}
 
-    def _delay(self, kind: ErrorKind, attempt: int) -> float:
+    def _delay(self, kind: ErrorKind, attempt: int, exc: BaseException | None = None) -> float:
+        window = _window_wait(exc)
+        if window is not None:
+            return window
         if kind is ErrorKind.CAPACITY:
             return with_jitter(fixed_backoff(self._capacity_wait), spread=0.25)
         raw = exponential_backoff(attempt, base=self._base, cap=self._cap)
@@ -115,7 +138,7 @@ class BoundedRetryPolicy(RetryPolicy):
 
         if attempt > self._budgets[kind]:
             return Outcome(OutcomeKind.TERMINAL, kind, attempt)
-        return Outcome(OutcomeKind.RETRY, kind, attempt, wait_s=self._delay(kind, attempt))
+        return Outcome(OutcomeKind.RETRY, kind, attempt, wait_s=self._delay(kind, attempt, exc))
 
     def reset(self, subject: str) -> None:
         self._used.pop(subject, None)
@@ -176,6 +199,10 @@ class NeverTerminatePolicy(RetryPolicy):
             return Outcome(OutcomeKind.DEGRADE, kind, attempt)
         if kind is ErrorKind.DEGENERATE and attempt > self._max_degenerate:
             return Outcome(OutcomeKind.DEGRADE, kind, attempt)
+
+        window = _window_wait(exc)
+        if window is not None:
+            return Outcome(OutcomeKind.RETRY, kind, attempt, wait_s=window)
 
         # Widest spread of the two policies: this is the one that survives a
         # multi-hour outage, so every worker watching that outage comes back at

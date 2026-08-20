@@ -602,6 +602,28 @@ check("jitter actually spreads a long wait", max(samples) - min(samples) > 1000.
       max(samples) - min(samples))
 check("jitter scales with the wait", with_jitter(0.0) == 0.0)
 
+print("\n[11f2] subscription usage windows")
+import time as _t
+from reviewer.exception_handling import (
+    BoundedRetryPolicy as _B, NeverTerminatePolicy as _N,
+    UsageLimitError, looks_like_usage_limit,
+)
+check("usage limit classifies as capacity, not fatal",
+      classify(UsageLimitError("x")) is ErrorKind.CAPACITY)
+check("a rate limit is not a usage window", not looks_like_usage_limit("rate limit exceeded"))
+for phrase in ("Claude usage limit reached. Resets at 3pm.", "5-hour limit reached", "weekly limit"):
+    check(f"recognised: {phrase[:28]!r}", looks_like_usage_limit(phrase))
+
+# A window that reopens in two hours must not be retried on a 30-second curve.
+for name, pol in (("bounded", _B()), ("never-terminate", _N())):
+    o = pol.decide(UsageLimitError("limit", resets_at=_t.time() + 7200), subject=f"w-{name}")
+    check(f"{name}: waits for the window, not the curve", 7200 <= o.wait_s <= 7260, o.wait_s)
+    o2 = pol.decide(UsageLimitError("limit"), subject=f"u-{name}")
+    check(f"{name}: unknown reset falls back to the curve", o2.wait_s < 120, o2.wait_s)
+check("seconds_remaining is never negative",
+      UsageLimitError("x", resets_at=_t.time() - 500).seconds_remaining() == 0.0)
+check("no reset means no answer", UsageLimitError("x").seconds_remaining() is None)
+
 print("\n[11g] scan lock")
 from reviewer.locking import LockHeld, exclusive
 lock = Path(_tf.mkdtemp()) / "scan.lock"
