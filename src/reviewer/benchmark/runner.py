@@ -82,9 +82,20 @@ def run_benchmark(
         for pr in labelled:
             path = _part_path(run_dir, pr.id)
             if path.exists():
-                log.info("resuming: %s already scored", pr.id)
-                parts.append(PrPart.model_validate_json(path.read_text(encoding="utf-8")))
-                continue
+                cached = PrPart.model_validate_json(path.read_text(encoding="utf-8"))
+                if cached.matcher_version == MATCHER_VERSION:
+                    log.info("resuming: %s already scored", pr.id)
+                    parts.append(cached)
+                    continue
+                # Reusing it would report a score under the old judge while
+                # labelling the run with the new one. Re-scoring costs money;
+                # a scorecard that quietly measures the wrong thing costs more.
+                log.warning(
+                    "%s was scored by matcher %s, not %s — re-scoring",
+                    pr.id,
+                    cached.matcher_version,
+                    MATCHER_VERSION,
+                )
 
             pipeline = matcher_pipeline
             if pool is not None:

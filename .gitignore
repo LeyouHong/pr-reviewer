@@ -26,3 +26,4 @@ candidates.json
 
 # Local tooling state
 .codebase-memory/
+corpus_retired.json
