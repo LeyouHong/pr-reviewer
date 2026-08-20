@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>pr-reviewer 架构说明</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 16mm; }
+
+  :root {
+    --ink:       #16232b;
+    --ink-soft:  #4d616b;
+    --ink-faint: #8296a0;
+    --rule:      #d3dde2;
+    --rule-soft: #e6edf0;
+    --surface:   #f6f9fa;
+    --accent:    #0f6e8c;
+    --accent-bg: #e3f0f5;
+    --warn:      #8a6d24;
+    --warn-bg:   #f5eeda;
+    --sans: "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    font-size: 9.6pt;
+    line-height: 1.62;
+    color: var(--ink);
+    background: #fff;
+  }
+
+  h1 {
+    font-size: 24pt;
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+    margin: 0 0 6pt;
+    font-weight: 600;
+  }
+  .sub { color: var(--ink-soft); font-size: 11pt; margin: 0 0 14pt; max-width: 46em; }
+
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 4pt 20pt;
+    font-family: var(--mono); font-size: 7.6pt; color: var(--ink-faint);
+    border-top: 1.5pt solid var(--ink); border-bottom: 1px solid var(--rule);
+    padding: 7pt 0; margin-bottom: 18pt;
+  }
+  .meta b { color: var(--ink-soft); font-weight: 500; }
+
+  h2 {
+    font-size: 13pt; font-weight: 600; letter-spacing: -0.01em;
+    margin: 20pt 0 7pt; padding-bottom: 3pt;
+    border-bottom: 1px solid var(--rule);
+    break-after: avoid;
+  }
+  h3 {
+    font-size: 10pt; font-weight: 600; margin: 13pt 0 4pt;
+    break-after: avoid;
+  }
+  p { margin: 0 0 7pt; }
+  .lead { color: var(--ink-soft); }
+
+  code {
+    font-family: var(--mono); font-size: 0.87em;
+    background: var(--surface); border: 1px solid var(--rule-soft);
+    border-radius: 2px; padding: 0 3px;
+  }
+
+  pre {
+    font-family: var(--mono); font-size: 7.4pt; line-height: 1.5;
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 2.5pt solid var(--accent);
+    padding: 8pt 10pt; margin: 8pt 0; overflow: hidden;
+    white-space: pre; break-inside: avoid;
+  }
+
+  table {
+    width: 100%; border-collapse: collapse; margin: 8pt 0;
+    font-size: 8.6pt; break-inside: avoid;
+  }
+  th, td {
+    text-align: left; padding: 4pt 7pt;
+    border-bottom: 1px solid var(--rule-soft); vertical-align: top;
+  }
+  thead th {
+    font-family: var(--mono); font-size: 7.2pt; font-weight: 500;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--ink-faint); border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  td.mono, th.num, td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .note {
+    background: var(--accent-bg); border-left: 2.5pt solid var(--accent);
+    padding: 7pt 10pt; margin: 9pt 0; font-size: 8.8pt;
+    break-inside: avoid;
+  }
+  .note.warn { background: var(--warn-bg); border-left-color: var(--warn); }
+  .note p:last-child { margin-bottom: 0; }
+  .note strong { font-weight: 600; }
+
+  .cols { display: flex; gap: 14pt; }
+  .cols > * { flex: 1; min-width: 0; }
+
+  ul { margin: 0 0 7pt; padding-left: 15pt; }
+  li { margin-bottom: 3pt; }
+
+  .page-break { break-before: page; }
+
+  footer {
+    margin-top: 22pt; padding-top: 7pt; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 7.2pt; color: var(--ink-faint);
+    display: flex; justify-content: space-between; gap: 12pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>pr-reviewer 架构说明</h1>
+<p class="sub">面向 GitHub PR 的 LLM 代码审查 Agent。本文说明代码结构、数据流、每层的职责，以及若干看起来可以简化、但实际上是为了修复具体故障而存在的设计。</p>
+
+<div class="meta">
+  <span><b>语言</b> Python 3.11+</span>
+  <span><b>代码</b> 66 个模块 / 9,461 行</span>
+  <span><b>Prompt</b> 22 个文件 / 1,154 行</span>
+  <span><b>测试</b> 133 条离线断言</span>
+  <span><b>模型</b> 可替换（默认 deepseek-v4-pro）</span>
+</div>
+
+<h2>1. 系统由三条独立的链路组成</h2>
+
+<p class="lead">它们共享同一套审查流水线，但触发方式、时间尺度和失败模式完全不同，所以是三个独立进程。</p>
+
+<pre>
+  ① 事件链路（秒级响应，分钟级执行）
+     GitHub ──webhook──> nginx(TLS) ──> serve ──入队──> 队列(磁盘) ──> worker ──> 发帖
+                                          └─ 202 立即返回              ↑
+  ② 对账链路（20 分钟一轮）                                            │
+     systemd timer ──> scan ──────────捡回 webhook 丢投的────────────────┘
+
+  ③ 评测链路（离线，不触碰生产）
+     语料(corpus.json) ──> benchmark-run ──> LLM judge ──> scorecard
+</pre>
+
+<table>
+  <thead><tr><th>链路</th><th>入口</th><th>回答什么</th><th>失败时</th></tr></thead>
+  <tbody>
+    <tr><td>事件</td><td class="mono">serve + worker</td><td>PR 有新修订，审它</td><td>丢投 → 由对账链路兜底</td></tr>
+    <tr><td>对账</td><td class="mono">scan</td><td>有没有漏掉的修订</td><td>下一轮重来，幂等无副作用</td></tr>
+    <tr><td>评测</td><td class="mono">benchmark-run</td><td>这次改动比上次好还是差</td><td>按 PR 检查点，重跑只补缺失</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+<p><strong>为什么必须是三个进程</strong>：GitHub webhook 10 秒超时，而一次审查要几分钟。接收端只做验签、入队、返回，任何多余的工作都会把"审查慢"变成"投递失败"。</p>
+</div>
+
+<h2>2. 审查流水线</h2>
+
+<p class="lead">三条链路最终都调用同一条流水线。它是一个逐文件的管道，每一级只做减法——除了第一级，后面每一级都只能删除或降级发现，不能新增。</p>
+
+<pre>
+  PR diff
+    │
+    ├─ 1. 解析 + 行号栏渲染          diffing/parser.py
+    │      旧行号 | 新行号 标记内容 ← 引用校验的唯一依据
+    │
+    ├─ 2. 按 glob 路由规则包          policy.py + resources/policies/
+    │      general.md + {python,typescript,java,go}.md
+    │
+    ├─ 3. 审查（可带工具、可 N 路）    pipeline/review.py
+    │      单次调用 或 agentic 探索 或 N 路 + 多数决聚合
+    │
+    ├─ 4. scope 校验                  diffing/scope.py
+    │      引用必须落在行号栏里，且至少一条命中本次新增行
+    │
+    ├─ 5. 资格闸门（便宜）             pipeline/qualify.py
+    │      启发式正则 → discard / pass / validate
+    │      info 走可执行性判据，不进昂贵的验证器
+    │
+    ├─ 6. 深度验证（昂贵，agentic）    pipeline/validate.py
+    │      带只读工具调查 → TP / FP / FP_OOS / TP_SI / IND
+    │
+    ├─ 7. 应用裁决 + 重写摘要          pipeline/apply.py, render.py
+    │
+    └─ 8. 渲染 + 发帖                  pipeline/inline.py, sources/github.py
+</pre>
+
+<div class="note">
+<p><strong>成本分布是刻意的</strong>：实测一轮中 26 条发现在第 5 级（一次文本调用）被拦下，只有 7 条进入第 6 级（多轮 agentic 调查）。把过滤放在便宜的一端，是这条流水线能负担深度验证的前提。</p>
+</div>
+
+<h2 class="page-break">3. 代码结构</h2>
+
+<table>
+  <thead><tr><th>包</th><th class="num">行</th><th>职责</th><th>模块</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">pipeline/</td><td class="num">1,635</td><td>审查流水线的每一级</td><td class="mono">orchestrator review qualify validate apply render inline scan semgrep</td></tr>
+    <tr><td class="mono">（顶层）</td><td class="num">1,438</td><td>契约与配置</td><td class="mono">models cli config constants policy prompt settings locking timestamps</td></tr>
+    <tr><td class="mono">benchmark/</td><td class="num">972</td><td>离线评测</td><td class="mono">runner matcher scoring model corpus calibration gold</td></tr>
+    <tr><td class="mono">provider/</td><td class="num">893</td><td>模型适配与结构化输出</td><td class="mono">client base profiles strict_schema json_repair</td></tr>
+    <tr><td class="mono">exception_handling/</td><td class="num">613</td><td>错误分类与重试策略</td><td class="mono">routing policy backoff types</td></tr>
+    <tr><td class="mono">sources/</td><td class="num">593</td><td>diff 来源与检出</td><td class="mono">github local_git checkout worktree</td></tr>
+    <tr><td class="mono">serve/</td><td class="num">523</td><td>webhook 接收与任务队列</td><td class="mono">webhook queue worker</td></tr>
+    <tr><td class="mono">tools/</td><td class="num">425</td><td>模型可用的只读工具</td><td class="mono">fs_tools researcher</td></tr>
+    <tr><td class="mono">diffing/</td><td class="num">379</td><td>diff 解析、切块、scope</td><td class="mono">parser scope chunker tokens</td></tr>
+  </tbody>
+</table>
+
+<h3>关键契约（<code>models.py</code>）</h3>
+
+<table>
+  <thead><tr><th>类型</th><th>阶段</th><th>要点</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">CodeChangeInfo</td><td>输入</td><td>含 <code>head_sha</code>——去重的幂等键</td></tr>
+    <tr><td class="mono">LLMFileChangeReview</td><td>模型输出</td><td>唯一发给模型的 schema，受严格约束</td></tr>
+    <tr><td class="mono">ReviewComment</td><td>单条发现</td><td><code>line_numbers</code> 带三态标记，供 scope 校验</td></tr>
+    <tr><td class="mono">FileChangeReview</td><td>过滤后</td><td>分留存 / 越界两组</td></tr>
+    <tr><td class="mono">PullRequestReview</td><td>最终</td><td>携带 <code>head_sha</code>，写进报告标记</td></tr>
+  </tbody>
+</table>
+
+<h2>4. Prompt 是数据，不是代码</h2>
+
+<p class="lead">1,154 行 prompt 全部在 <code>resources/</code> 下，按角色 / 任务 / 规则三类组织。改判据不需要动 Python。</p>
+
+<div class="cols">
+<div>
+<h3>结构</h3>
+<pre>
+resources/
+├── role/default/     角色定型，各 1–3 行
+├── tasks/            10 个任务模板
+├── rules/
+│   ├── general.md          通用准则与指令
+│   └── language_rules/     4 个语言包
+└── policies/default.json   glob → 规则包路由
+</pre>
+</div>
+<div>
+<h3>两条硬约定</h3>
+<ul>
+<li><strong>角色里不写"不要做 X"</strong>——否定式会让被否定的概念更突出</li>
+<li><strong>规则文件标题层级 ≥ H3</strong>——它们被拼接进 H2 之下，更高层级会破坏锚点语义</li>
+<li><strong>模板不用 <code>str.format</code></strong>——prompt 里嵌了大量 JSON 和代码示例，花括号会让它崩溃</li>
+</ul>
+</div>
+</div>
+
+<h2>5. 换模型是一个 flag</h2>
+
+<p class="lead">每种端点用什么方式约束输出、有多大上下文、认哪些厂商字段，写在 <code>provider/profiles.py</code> 里。流水线本身不含任何厂商分支。</p>
+
+<table>
+  <thead><tr><th>profile</th><th>约束方式</th><th class="num">上下文</th><th class="num">chunk 预算</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">deepseek</td><td class="mono">strict_tool</td><td class="num">1,000,000</td><td class="num">660,000</td></tr>
+    <tr><td class="mono">openai</td><td class="mono">json_schema</td><td class="num">128,000</td><td class="num">84,480</td></tr>
+    <tr><td class="mono">vllm</td><td class="mono">guided_json</td><td class="num">32,768</td><td class="num">21,626</td></tr>
+    <tr><td class="mono">ollama</td><td class="mono">json_schema</td><td class="num">8,192</td><td class="num">5,406</td></tr>
+    <tr><td class="mono">llamacpp</td><td class="mono">json_object</td><td class="num">8,192</td><td class="num">5,406</td></tr>
+    <tr><td class="mono">generic</td><td class="mono">prompt</td><td class="num">16,384</td><td class="num">10,813</td></tr>
+  </tbody>
+</table>
+
+<div class="note warn">
+<p><strong>被忽略的约束和被执行的约束长得一模一样，直到你去检查。</strong> 一个拒绝未知字段的服务器会响亮失败、一分钟就修好；一个接受 <code>strict: true</code> 却不执行的服务器，会返回流畅的、自己发明的 schema。所以无论端点承诺什么，返回值一律解析并校验。</p>
+</div>
+
+<h2 class="page-break">6. 六处不能简化的设计</h2>
+
+<p class="lead">下面每一条都对应一次真实故障。它们看起来都可以更简单。</p>
+
+<h3>去重按修订号，不按时间戳</h3>
+<p>原判据是"最新报告时间 &gt; PR 最后更新时间"。在"每次推送都审"的场景下会稳定漏审：推 A → 开始审 A → 推 B → A 的报告发出（时间晚于 B 的推送）→ 下一轮判定已审 → <strong>B 永远不会被审</strong>。现在每份报告把它回答的 commit 写进标记，判据是"这个 commit 有没有报告"。这也是重试安全的前提——没有它，每个重试机制都会变成重复发帖的来源。</p>
+
+<h3>解码侧五层防御</h3>
+<p>去围栏 → 大括号提取 → 重驱动模型 → clamp 截断超长字段 → 校验。写这套时以为是兜底，实际每一层都被真实触发过。</p>
+
+<h3>Schema 完全内联</h3>
+<p>Pydantic 生成的 <code>$defs</code> 间接引用不被识别时，嵌套定义压根进不了语法约束，<code>strict</code> 静默降级成"提示"，模型返回自己发明的字段名。所有 <code>$ref</code> 现在递归展开成自包含文档。</p>
+
+<h3>验证器无工具调用的裁决降级为 INDETERMINATE</h3>
+<p>没读过代码就下的结论是意见，不是发现。</p>
+
+<h3>每个任务 pin 到自己的 commit</h3>
+<p>worker 消费的连续两个任务往往是不同 PR、甚至不同仓库。读文件的阶段若指向一份固定检出，验证器不会报错——它会对毫不相干的代码给出自信的裁决。没有配置检出的仓库，这些阶段被关闭而不是指向进程的当前目录。</p>
+
+<h3>计费失败是 FATAL，不是容量限制</h3>
+<p>"余额不足"曾被归类为容量类，于是每次调用重试 10 次 × 30 秒退避——反复撞一堵永远不会消失的墙。等待能解决限流，对空钱包毫无作用。</p>
+
+<h2>7. 评测</h2>
+
+<p class="lead">没有这套，改 prompt 就只能靠感觉。它回答的是"这次改动比上次好还是差"，不是"这个 agent 好不好用"。</p>
+
+<pre>
+  语料      corpus.json — 每条 = 一个根因、一个位置、一个 commit 能修完
+  跑分      benchmark-run --corpus X --run-dir Y [--agentic] [--checkout-repo Z]
+  检查点    每个 PR 单独落盘，中断重跑只补缺失
+  打分      precision 数 finding，recall 数缺陷（两种单位分开计）
+  分桶      按 severity / 按是否需要跨文件 / 按价值分级
+</pre>
+
+<table>
+  <thead><tr><th>配置</th><th class="num">precision</th><th class="num">recall</th><th class="num">F1</th></tr></thead>
+  <tbody>
+    <tr><td>裸审查器</td><td class="num">0.139</td><td class="num">0.438</td><td class="num">0.211</td></tr>
+    <tr><td>+ 验证流水线</td><td class="num">0.164</td><td class="num">0.438</td><td class="num">0.238</td></tr>
+    <tr><td>+ 收紧规则包</td><td class="num">0.209</td><td class="num">0.438</td><td class="num">0.283</td></tr>
+  </tbody>
+</table>
+
+<div class="note warn">
+<p><strong>这个数字不能读作"准确率"。</strong> 语料只有 16 条、单一语言、由本项目作者标注。一条匹配不上的发现，可能是它错了，也可能是它对了但没被标注——两者在数据上分不开。这套 harness 是相对刻度，不是绝对评价。</p>
+</div>
+
+<h2>8. 命令一览</h2>
+
+<table>
+  <thead><tr><th>命令</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">review-diff --base main</td><td>审本地分支，不碰 GitHub</td></tr>
+    <tr><td class="mono">review-pr N [--post] [--inline]</td><td>审一个 PR，可发行级评论</td></tr>
+    <tr><td class="mono">serve --queue DIR</td><td>webhook 接收端</td></tr>
+    <tr><td class="mono">worker --queue DIR --settings S</td><td>消费队列，按 commit 检出</td></tr>
+    <tr><td class="mono">queue --queue DIR</td><td>看积压</td></tr>
+    <tr><td class="mono">scan --settings S [--dry-run]</td><td>对账扫描，持排他锁</td></tr>
+    <tr><td class="mono">benchmark-capture / benchmark-run</td><td>建语料 / 跑分</td></tr>
+    <tr><td class="mono">calibrate-matcher</td><td>换模型后先验 judge 有没有退化</td></tr>
+  </tbody>
+</table>
+
+<h2>9. 当前状态与已知短板</h2>
+
+<div class="cols">
+<div>
+<h3>已完成</h3>
+<ul>
+<li>审查 + 两级过滤流水线</li>
+<li>webhook / 队列 / worker 部署栈</li>
+<li>systemd 单元与 nginx 配置</li>
+<li>模型无关的 provider 抽象</li>
+<li>带检查点的评测 harness</li>
+<li>133 条离线断言</li>
+</ul>
+</div>
+<div>
+<h3>已知短板</h3>
+<ul>
+<li>语料 16 条，跨文件仅 5 条——单个分桶都在噪音内</li>
+<li>Java / Python / Go 规则包<strong>从未跑过真实文件</strong></li>
+<li>16 条缺陷未召回，其中 5 条属于"在同文件报了别的"</li>
+<li>PARTIAL 判定丢失 gt id，无法自动归因</li>
+<li>info 级 precision 仍偏低</li>
+<li>未接入 prompt caching</li>
+</ul>
+</div>
+</div>
+
+<footer>
+  <span>pr-reviewer — 架构说明</span>
+  <span>基于仓库实际统计生成</span>
+</footer>
+
+</body>
+</html>

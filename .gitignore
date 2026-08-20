@@ -36,3 +36,6 @@ candidates.json
 corpus_retired.json
 crb_corpus.json
 crb_smoke.json
+
+# Regenerated from docs/architecture.html by docs/build.sh
+docs/*.pdf
