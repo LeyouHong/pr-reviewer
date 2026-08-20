@@ -2,11 +2,19 @@
 
 TypeScript's guarantees end wherever the type system is escaped. Most real defects in reviewed diffs enter through `any`, a non-null assertion, an unchecked cast, or an unhandled promise. Weigh those above stylistic concerns.
 
+### Context: ts-type-escape
+
+An escape from the type system is only a defect when something goes wrong
+because of it. `any` on a callback parameter in a file that never misuses the
+value costs nothing at runtime; a non-null assertion on a value a readable path
+leaves undefined crashes. Severity follows that difference, not the syntax.
+
 ### Criteria: ts-type-escape
 
-- `any` introduced in a callback parameter, function signature, or cast where the actual type is known or inferrable MUST be flagged at `warning`.
-- A non-null assertion (`!`) added on a value that a readable path can leave `null` or `undefined` MUST be flagged at `error`.
-- `as unknown as T` or a cast that widens then narrows to an unrelated type MUST be flagged at `warning`.
+- A non-null assertion (`!`) added on a value that a readable path can leave `null` or `undefined` MUST be flagged at `error`, naming the path that produces the absent value.
+- `any` or an unchecked cast through which a value of a *different* shape can actually reach a consumer MUST be flagged at `warning`, naming the consumer and what breaks when it arrives.
+- `any` introduced where the actual type is known or inferrable, with no such consumer, MAY be flagged at `info`, and SHOULD NOT be flagged when the same file already carries a more pressing finding. A bare "this is `any`" restates the diff.
+- `as unknown as T` MUST be flagged at `warning` only when the two types are shown to be incompatible; otherwise it falls under the `info` clause above.
 
 ### Criteria: ts-async
 

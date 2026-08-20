@@ -71,9 +71,26 @@ Here `authenticateCookie` was removed, possibly due to a refactor or a deprecati
 
 ### Criteria: general-info
 
-- Changes that create performance issues, reduce maintainability or testability, SHOULD be flagged at `info`.
-- New functionality without accompanying test additions or changes SHOULD be flagged at `info`.
-- Non-compliance with best practices (REST, language conventions, publicly known but not explicitly stated) MAY be flagged at `info`, if no overriding criteria is present. SHOULD NOT be flagged if a more pressing issue exists.
+Every clause below is subordinate to one condition: an `info` comment competes
+for the reader's attention with the `error` and `warning` comments around it.
+None of them SHOULD be raised on a file that already carries a more pressing
+finding.
+
+- Changes that create performance issues, reduce maintainability or testability, SHOULD be flagged at `info`, naming the input or the code path under which the cost is paid.
+- New functionality whose *defect-prone* behaviour has no accompanying test MAY be flagged at `info`. The comment MUST name the specific behaviour left uncovered and the class of defect a test would catch. "This feature has no tests" restates the diff and is not a finding.
+- Non-compliance with best practices (REST, language conventions, publicly known but not explicitly stated) MAY be flagged at `info`, if no overriding criteria is present.
+
+### Directive: general-info-actionability
+
+An `info` comment earns its place only when its own text names both a concrete
+trigger and a concrete consequence — the same test the reader applies when
+deciding whether to act on it. Before emitting one, ask: *"can I name what has
+to happen for this to matter, and what goes wrong when it does?"* If either
+half is missing, the observation is true but not a finding, and it belongs in
+the file summary or nowhere.
+
+This is what separates "the loop re-scans the whole string on every token, so a
+long response degrades quadratically" from "this could be more efficient".
 
 ### Criteria: general-warning
 
