@@ -15,7 +15,7 @@ from .benchmark.calibration import run_calibration
 from .benchmark.gold import format_worklist, label_run
 from .benchmark.runner import run_benchmark
 from .pipeline.inline import build_inline_review
-from .pipeline.scan import scan_repos
+from .pipeline.scan import LockHeld, scan_repos
 from .settings import load_settings
 from .sources import github, local_git
 
@@ -163,7 +163,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print(f"No repositories configured in {args.settings}", file=sys.stderr)
         return 0
     config = _config_from(args)
-    results = scan_repos(settings, config, dry_run=args.dry_run)
+    try:
+        results = scan_repos(settings, config, dry_run=args.dry_run)
+    except LockHeld as exc:
+        # Exit 0: cron firing while the previous sweep still runs is the
+        # system working, not a failure worth mailing the operator about.
+        print(f"scan: another sweep is already running ({exc})", file=sys.stderr)
+        return 0
     reviewed = sum(1 for r in results if r.get("reviewed"))
     skipped = len(results) - reviewed
     print(

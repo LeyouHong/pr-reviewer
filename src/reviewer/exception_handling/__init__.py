@@ -7,7 +7,7 @@ can swap in :class:`NeverTerminatePolicy` without touching the retry mechanism.
 
 from __future__ import annotations
 
-from .backoff import BackoffKind, exponential_backoff, fixed_backoff
+from .backoff import BackoffKind, exponential_backoff, fixed_backoff, with_jitter
 from .policy import (
     BoundedRetryPolicy,
     NeverTerminatePolicy,
@@ -18,6 +18,7 @@ from .policy import (
 )
 from .routing import classify, is_billing_failure
 from .types import (
+    DegradedCall,
     BillingError,
     ContentError,
     DegenerateOutputError,
@@ -27,11 +28,13 @@ from .types import (
 
 __all__ = [
     "BackoffKind",
+    "with_jitter",
     "BillingError",
     "BoundedRetryPolicy",
     "ContentError",
     "DegenerateOutputError",
     "ErrorKind",
+    "DegradedCall",
     "NeverTerminatePolicy",
     "Outcome",
     "OutcomeKind",

@@ -22,15 +22,14 @@ from __future__ import annotations
 import abc
 import enum
 import logging
-import random
 import time
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 from .. import constants
-from .backoff import exponential_backoff, fixed_backoff
+from .backoff import exponential_backoff, fixed_backoff, with_jitter
 from .routing import classify
-from .types import ErrorKind
+from .types import DegradedCall, ErrorKind
 
 log = logging.getLogger(__name__)
 
@@ -104,9 +103,9 @@ class BoundedRetryPolicy(RetryPolicy):
 
     def _delay(self, kind: ErrorKind, attempt: int) -> float:
         if kind is ErrorKind.CAPACITY:
-            return fixed_backoff(self._capacity_wait) + random.uniform(0, 1.0)
+            return with_jitter(fixed_backoff(self._capacity_wait), spread=0.25)
         raw = exponential_backoff(attempt, base=self._base, cap=self._cap)
-        return raw + random.uniform(0, 1.0)
+        return with_jitter(raw, spread=0.25)
 
     def decide(self, exc: BaseException, *, subject: str) -> Outcome:
         kind = classify(exc)
@@ -178,7 +177,12 @@ class NeverTerminatePolicy(RetryPolicy):
         if kind is ErrorKind.DEGENERATE and attempt > self._max_degenerate:
             return Outcome(OutcomeKind.DEGRADE, kind, attempt)
 
-        wait = exponential_backoff(attempt, base=self._base, cap=self._cap)
+        # Widest spread of the two policies: this is the one that survives a
+        # multi-hour outage, so every worker watching that outage comes back at
+        # a different moment instead of re-creating the stampede on recovery.
+        wait = with_jitter(
+            exponential_backoff(attempt, base=self._base, cap=self._cap), spread=0.5
+        )
         return Outcome(OutcomeKind.RETRY, kind, attempt, wait_s=wait)
 
     def reset(self, subject: str) -> None:
@@ -195,7 +199,15 @@ def with_retries(
 
     Default policy is :class:`BoundedRetryPolicy` with the constants configured
     for one-shot review requests, matching pre-refactor behaviour. Long-running
-    loops (Batch 3) pass their own :class:`NeverTerminatePolicy`.
+    loops pass their own :class:`NeverTerminatePolicy`.
+
+    Two failure exits, and the type is what tells them apart:
+
+    * TERMINAL re-raises the original exception. The caller asked for a value
+      and there is none; whatever handles provider errors handles this.
+    * DEGRADE raises :class:`DegradedCall`. The subject is not going to work
+      and the loop should move to the next one, so a sweep catches
+      ``DegradedCall`` and continues while still letting a genuine fault out.
     """
     active = policy or BoundedRetryPolicy()
 
@@ -223,7 +235,12 @@ def with_retries(
                     outcome.error_kind.value,
                     exc,
                 )
-                raise
+                raise DegradedCall(
+                    exc,
+                    kind=outcome.error_kind,
+                    subject=label,
+                    attempts=outcome.attempt,
+                ) from exc
             log.warning(
                 "%s: %s failure %d, retrying in %.1fs: %s",
                 label,

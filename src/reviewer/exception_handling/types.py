@@ -40,6 +40,27 @@ class BillingError(RuntimeError):
     """
 
 
+class DegradedCall(RuntimeError):
+    """Retrying stopped, and the caller is expected to carry on without it.
+
+    Raised in place of the original exception so a long-running loop can tell
+    "this subject is not going to work, skip it" apart from "the run is over".
+    Both arrive as an exception because the call has no value to return; only
+    the type distinguishes them, which is what a loop needs to catch one and
+    not the other. The original is attached as ``__cause__`` and repeated in
+    ``original`` so a handler does not have to walk the chain.
+    """
+
+    def __init__(self, original: BaseException, *, kind: "ErrorKind", subject: str, attempts: int):
+        super().__init__(
+            f"{subject}: degraded after {attempts} {kind.value} failure(s): {original}"
+        )
+        self.original = original
+        self.kind = kind
+        self.subject = subject
+        self.attempts = attempts
+
+
 @dataclass(frozen=True)
 class Verdict:
     """Classifier output: the kind plus a short evidence tag for logs."""

@@ -14,9 +14,16 @@ Skip / review decision, per PR:
 4. Otherwise → review.
 
 Cron itself is not our problem — a systemd timer or a crontab entry drives
-``pr-reviewer scan`` at whatever cadence the operator prefers. The scanner
-must be re-entrant: two overlapping invocations must not double-post, which
-is why the fingerprint dedup runs before the review, not after.
+``pr-reviewer scan`` at whatever cadence the operator prefers. Overlap is,
+though: the decision to review is made before a review that takes minutes, and
+the evidence that would suppress a second one — a posted report — only exists
+after it finishes. Two sweeps started ten minutes apart would both decide the
+same pull request needs a review and both post one.
+
+A sweep therefore holds an exclusive lock for its whole duration and a second
+invocation exits rather than queueing. That covers one host, which is what
+cron overlap is; two machines scanning the same repository would need a claim
+the remote side can see, and this does not provide one.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from ..config import Config
+from ..locking import LockHeld, exclusive
 from ..settings import RepoConfig, ScanSettings, WindowConfig
 from ..sources import github
 from ..sources.worktree import WorktreePool, WorktreeError
@@ -131,14 +139,35 @@ def scan_repos(
     *,
     dry_run: bool = False,
     reviewer: Callable[[Config, str, int], int] | None = None,
+    lock_path: Path | None = None,
 ) -> list[dict]:
     """Iterate every configured repo and post reviews where needed.
+
+    Held under an exclusive lock unless ``dry_run`` — a dry run posts nothing,
+    so there is nothing to double-post and no reason to make an operator
+    inspecting the decisions wait on a live sweep. Raises
+    :class:`reviewer.locking.LockHeld` when another sweep is already running.
 
     ``reviewer`` is injected so tests can drive the loop without a real
     pipeline; when ``None``, the default implementation runs the full
     ``ReviewPipeline`` and posts as an issue comment. Callers who want the
     inline flavour or a dry-run rendering supply their own hook.
     """
+    if dry_run:
+        return _sweep(settings, config, dry_run=True, reviewer=reviewer)
+
+    path = lock_path or default_lock_path()
+    with exclusive(path, label="scan"):
+        return _sweep(settings, config, dry_run=False, reviewer=reviewer)
+
+
+def _sweep(
+    settings: ScanSettings,
+    config: Config,
+    *,
+    dry_run: bool,
+    reviewer: Callable[[Config, str, int], int] | None,
+) -> list[dict]:
     window = _resolve_overrides(settings)
     scoped_config = _apply_overrides(config, window)
 
@@ -242,7 +271,14 @@ def default_settings_path() -> Path:
     return Path.cwd() / "settings.json"
 
 
+def default_lock_path() -> Path:
+    """State lives beside the settings file, so one state dir is one scanner."""
+    return Path.cwd() / ".pr-reviewer" / "scan.lock"
+
+
 __all__ = [
+    "LockHeld",
     "scan_repos",
     "default_settings_path",
+    "default_lock_path",
 ]

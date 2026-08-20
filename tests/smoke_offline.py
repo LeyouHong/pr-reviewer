@@ -551,6 +551,88 @@ check("no checkout disables agentic review", scoped.agentic_review is False)
 check("no worktree to release", wt is None)
 check("caller config untouched", base.enable_validation is True and base.agentic_review is True)
 
+print("\n[11f] retry outcomes: degrade vs terminal, and jitter")
+import tempfile as _tf
+from reviewer.exception_handling import (
+    BoundedRetryPolicy, DegradedCall, NeverTerminatePolicy, with_jitter, with_retries,
+)
+
+def _always(exc):
+    def _f(): raise exc
+    return _f
+
+# A bounded policy exhausts its budget and hands back the caller's own error.
+try:
+    with_retries(_always(RuntimeError("Error code: 402 - Insufficient Balance")),
+                 label="t", policy=BoundedRetryPolicy())
+    check("terminal raises", False, "no error")
+except DegradedCall:
+    check("terminal raises the original, not DegradedCall", False, "got DegradedCall")
+except RuntimeError as e:
+    check("terminal raises the original, not DegradedCall", "402" in str(e), str(e)[:50])
+
+# The never-terminate policy degrades on a deterministic failure instead.
+try:
+    with_retries(_always(RuntimeError("Error code: 402 - Insufficient Balance")),
+                 label="t", policy=NeverTerminatePolicy())
+    check("degrade raises", False, "no error")
+except DegradedCall as d:
+    check("degrade raises DegradedCall", True)
+    check("degrade names the subject", d.subject == "t", d.subject)
+    check("degrade keeps the original", "402" in str(d.original), str(d.original)[:40])
+    check("degrade chains the cause", isinstance(d.__cause__, RuntimeError))
+
+# A loop can therefore catch one and not the other.
+def _sweep(errors):
+    survived = []
+    for name, exc in errors:
+        try:
+            with_retries(_always(exc), label=name, policy=NeverTerminatePolicy())
+        except DegradedCall:
+            survived.append(name)
+    return survived
+check("a loop skips degraded subjects and continues",
+      _sweep([("a", RuntimeError("402 -")), ("b", RuntimeError("402 -"))]) == ["a", "b"])
+
+# Jitter is proportional and never exceeds the requested wait.
+samples = [with_jitter(3600.0, spread=0.5) for _ in range(400)]
+check("jitter never exceeds the cap", max(samples) <= 3600.0, max(samples))
+check("jitter respects the spread floor", min(samples) >= 1800.0, min(samples))
+check("jitter actually spreads a long wait", max(samples) - min(samples) > 1000.0,
+      max(samples) - min(samples))
+check("jitter scales with the wait", with_jitter(0.0) == 0.0)
+
+print("\n[11g] scan lock")
+from reviewer.locking import LockHeld, exclusive
+lock = Path(_tf.mkdtemp()) / "scan.lock"
+with exclusive(lock, label="first"):
+    check("lock file exists while held", lock.exists())
+    try:
+        with exclusive(lock, label="second"):
+            check("second holder rejected", False, "it got in")
+    except LockHeld:
+        check("second holder rejected", True)
+check("lock released on exit", not lock.exists())
+
+try:
+    with exclusive(lock, label="boom"):
+        raise ValueError("body failed")
+except ValueError:
+    pass
+check("lock released even when the body raises", not lock.exists())
+
+lock.write_text('{"pid": 999999, "taken_at": 0}')
+with exclusive(lock, ttl_s=1.0, label="takeover"):
+    check("stale lock is taken over", True)
+check("taken-over lock released", not lock.exists())
+
+lock.write_text('{"pid": 999999, "taken_at": %f}' % (__import__("time").time()))
+try:
+    with exclusive(lock, ttl_s=3600.0, label="fresh"):
+        check("fresh foreign lock honoured", False, "it got in")
+except LockHeld:
+    check("fresh foreign lock honoured", True)
+
 print("\n[12] model round-trip")
 review = LLMFileChangeReview(
     overall_rating=OverallRating.NEEDS_IMPROVEMENT, summary="s", comments=[mk(13)],
