@@ -633,6 +633,59 @@ try:
 except LockHeld:
     check("fresh foreign lock honoured", True)
 
+print("\n[11h] trigger boundaries, timestamps, research budget")
+from reviewer.sources.github import trigger_marker as _tm
+from reviewer.timestamps import is_after, newest, parse_iso
+from reviewer.tools.researcher import DEFAULT_RESEARCH_CALLS, build_dispatch
+
+def _cm(body, at="2026-08-19T12:00:00Z"): return {"body": body, "created_at": at}
+
+check("!reviewer does not trigger a review", _tm([_cm("ask !reviewer to look")]) is None)
+check("!review inside prose still triggers", _tm([_cm("please !review this")]) == "!review")
+check("!reviews (plural) does not trigger", _tm([_cm("see !reviews")]) is None)
+check("trigger match is case-insensitive", _tm([_cm("!DO-NOT-REVIEW")]) == "!do-not-review")
+check("opt-out beats a trigger in the same sweep",
+      _tm([_cm("!review"), _cm("!do-not-review")]) == "!do-not-review")
+
+# Z and +00:00 are the same instant; string comparison ranks Z after +.
+check("Z and +00:00 compare as equal instants",
+      is_after("2026-01-01T00:00:00Z", "2026-01-01T00:00:00+00:00") is False)
+check("string comparison would have got that wrong",
+      "2026-01-01T00:00:00Z" > "2026-01-01T00:00:00+00:00")
+check("a real ordering still holds across spellings",
+      is_after("2026-01-01T00:00:01Z", "2026-01-01T00:00:00+00:00"))
+check("no reference means no bound", is_after("2026-01-01T00:00:00Z", None))
+check("unreadable candidate is not after anything", is_after("not-a-date", None) is False)
+check("naive timestamps are read as UTC",
+      parse_iso("2026-01-01T00:00:00").tzinfo is not None)
+check("newest picks the latest across spellings",
+      newest(["2026-01-01T00:00:00+00:00", "2026-06-01T00:00:00Z", "junk"])
+      == "2026-06-01T00:00:00Z")
+check("newest of nothing is empty", newest(["junk", ""]) == "")
+
+# The research budget belongs to one dispatch, so a new review gets a new one.
+class _StubResearcher:
+    def __init__(self): self.calls = 0
+    def research(self, question, focus_paths=None):
+        self.calls += 1
+        return f"answer {self.calls}"
+
+class _StubFs:
+    def dispatch(self, name, args): return f"fs:{name}"
+
+stub = _StubResearcher()
+disp = build_dispatch(_StubFs(), stub, max_calls=2)
+outs = [disp("research_codebase", {"question": f"q{i}"}) for i in range(4)]
+check("budget allows exactly max_calls researches", stub.calls == 2, stub.calls)
+check("over-budget calls are refused, not raised", outs[2].startswith("ERROR:"), outs[2][:40])
+check("refusal tells the model to conclude", "Conclude" in outs[2])
+check("fs tools are unaffected by the research budget",
+      disp("read_file", {"path": "x"}) == "fs:read_file")
+fresh = build_dispatch(_StubFs(), stub, max_calls=2)
+fresh("research_codebase", {"question": "q"})
+check("a new dispatch gets a fresh budget", stub.calls == 3, stub.calls)
+check("default budget is documented", DEFAULT_RESEARCH_CALLS == 5)
+
 print("\n[12] model round-trip")
 review = LLMFileChangeReview(
     overall_rating=OverallRating.NEEDS_IMPROVEMENT, summary="s", comments=[mk(13)],

@@ -37,6 +37,14 @@ log = logging.getLogger(__name__)
 # turns to arrive at "unclear" is worse than saying so after 8.
 DEFAULT_RESEARCH_TURNS = 8
 
+# Each research call is a whole nested agent loop, and the outer reviewer gets
+# twenty turns — so an unbudgeted reviewer can spend twenty nested loops on one
+# file without ever being wrong enough to stop. Five is generous for the
+# questions this is meant to answer; past that the reviewer is browsing, and
+# the refusal tells it to conclude with what it has rather than failing the
+# review.
+DEFAULT_RESEARCH_CALLS = 5
+
 
 RESEARCH_TOOL_SPEC: dict[str, Any] = {
     "type": "function",
@@ -152,26 +160,45 @@ class Researcher:
 
 
 def build_dispatch(
-    fs_tools: FileSystemTools, researcher: Researcher
+    fs_tools: FileSystemTools,
+    researcher: Researcher,
+    *,
+    max_calls: int = DEFAULT_RESEARCH_CALLS,
 ) -> Callable[[str, dict[str, Any]], str]:
-    """Compose the base fs dispatch with ``research_codebase`` routing.
+    """Compose the base fs dispatch with budgeted ``research_codebase`` routing.
 
-    Kept a factory rather than a bound method so the review pipeline stays
-    agnostic to how the two are wired: a future variant could swap either
-    piece for a stub without touching the reviewer.
+    The returned closure owns the budget, so callers get a fresh allowance by
+    building a new dispatch — which is why this is a factory rather than a
+    bound method. Build one per review; sharing a single dispatch across files
+    would let the first large file spend the budget for all of them.
+
+    Exhausting the budget returns a message, not an error: the reviewer can
+    still finish with what it already read, and a review that concludes on
+    partial evidence beats one that fails outright.
     """
+    used = 0
 
     def dispatch(name: str, args: dict[str, Any]) -> str:
-        if name == "research_codebase":
-            question = args.get("question", "")
-            focus = args.get("focus_paths") or None
-            return researcher.research(question, focus_paths=focus)
-        return fs_tools.dispatch(name, args)
+        nonlocal used
+        if name != "research_codebase":
+            return fs_tools.dispatch(name, args)
+        if used >= max_calls:
+            log.info("research budget of %d call(s) exhausted", max_calls)
+            return (
+                f"ERROR: the research budget for this review ({max_calls} calls) "
+                "is spent. Conclude using the evidence you already have, and say "
+                "what remains unverified rather than guessing."
+            )
+        used += 1
+        question = args.get("question", "")
+        focus = args.get("focus_paths") or None
+        return researcher.research(question, focus_paths=focus)
 
     return dispatch
 
 
 __all__ = [
+    "DEFAULT_RESEARCH_CALLS",
     "DEFAULT_RESEARCH_TURNS",
     "RESEARCH_TOOL_SPEC",
     "Researcher",

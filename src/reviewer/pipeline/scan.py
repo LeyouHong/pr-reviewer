@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 from ..config import Config
 from ..locking import LockHeld, exclusive
 from ..settings import RepoConfig, ScanSettings, WindowConfig
+from ..timestamps import is_after, newest
 from ..sources import github
 from ..sources.worktree import WorktreePool, WorktreeError
 
@@ -125,12 +126,12 @@ def _should_review(
 
 def _newest_report_at(reports: list[dict]) -> str:
     """Timestamp of the most recent report, or ``""`` when none exists."""
-    return max((r.get("created_at") or "" for r in reports), default="")
+    return newest([r.get("created_at") or "" for r in reports])
 
 
 def _newest_report_after(reports: list[dict], iso: str) -> bool:
-    newest = _newest_report_at(reports)
-    return bool(newest) and newest > iso
+    latest = _newest_report_at(reports)
+    return bool(latest) and is_after(latest, iso)
 
 
 def scan_repos(
@@ -259,7 +260,11 @@ def _review_and_post(
     review = pipeline.run(info)
     markdown = pipeline.render(review)
 
-    pruned = github.prune_old_reports(number, keep=4, repo=repo)
+    # Leave room for the report about to be posted, so the PR settles at
+    # ``max_reviews`` rather than one above it.
+    pruned = github.prune_old_reports(
+        number, keep=max(config.max_reviews - 1, 0), repo=repo
+    )
     if pruned:
         log.info("scan: pruned %d stale report(s) on %s#%d", pruned, repo, number)
     github.post_report(number, markdown, repo=repo)

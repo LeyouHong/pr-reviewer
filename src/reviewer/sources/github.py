@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from datetime import datetime, timezone
 
 from ..constants import REPORT_FINGERPRINT
 from ..diffing.parser import parse_unified_diff
+from ..timestamps import is_after, parse_iso
 from ..models import CodeChangeInfo
 
 log = logging.getLogger(__name__)
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class GitHubError(RuntimeError):
@@ -116,19 +120,17 @@ def has_report_since(number: int, since_iso: str, repo: str | None = None) -> bo
     """
     if not since_iso:
         return False
-    cutoff = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
-    for item in existing_report_comments(number, repo):
-        created = datetime.fromisoformat(item["created_at"].replace("Z", "+00:00"))
-        if created.astimezone(timezone.utc) > cutoff.astimezone(timezone.utc):
-            return True
-    return False
+    return any(
+        is_after(item.get("created_at"), since_iso)
+        for item in existing_report_comments(number, repo)
+    )
 
 
 def prune_old_reports(number: int, keep: int, repo: str | None = None) -> int:
     """Delete all but the newest ``keep`` prior reports. Returns count deleted."""
     slug = _repo_slug(repo)
     comments = existing_report_comments(number, repo)
-    comments.sort(key=lambda c: c["created_at"])
+    comments.sort(key=lambda c: (parse_iso(c.get("created_at")) or _EPOCH))
     stale = comments[: max(len(comments) - keep, 0)]
     for item in stale:
         _gh("api", "-X", "DELETE", f"repos/{slug}/issues/comments/{item['id']}")
@@ -183,12 +185,17 @@ def post_inline_review(
 
 # -- trigger words ---------------------------------------------------------
 
-# ``!review`` forces a re-review on the next scan cycle even if a fresh
-# report already exists. ``!do-not-review`` blocks all future scans — the
-# author or a maintainer is opting this PR out. Substring-with-word-boundary
-# match so a comment quoting "``!review``" as prose still triggers.
+# ``!review`` forces a re-review on the next scan cycle even if a fresh report
+# already exists. ``!do-not-review`` blocks all future scans — the author or a
+# maintainer is opting this PR out.
+#
+# Matched with a trailing word boundary so the marker still fires inside prose
+# ("please !review this") without firing on a word that merely starts with it:
+# "ask !reviewer to look" is a sentence about a person, not a command.
 _TRIGGER_REVIEW = "!review"
 _TRIGGER_SKIP = "!do-not-review"
+_REVIEW_RE = re.compile(r"!review\b", re.IGNORECASE)
+_SKIP_RE = re.compile(r"!do-not-review\b", re.IGNORECASE)
 
 
 def _pr_issue_comments(number: int, repo: str | None = None) -> list[dict]:
@@ -219,13 +226,11 @@ def trigger_marker(
     """
     seen_review: str | None = None
     for item in comments:
-        body = (item.get("body") or "").lower()
-        if _TRIGGER_SKIP in body:
+        body = item.get("body") or ""
+        if _SKIP_RE.search(body):
             return _TRIGGER_SKIP
-        if _TRIGGER_REVIEW in body:
-            created = item.get("created_at") or ""
-            if since_iso is None or created > since_iso:
-                seen_review = _TRIGGER_REVIEW
+        if _REVIEW_RE.search(body) and is_after(item.get("created_at"), since_iso):
+            seen_review = _TRIGGER_REVIEW
     return seen_review
 
 

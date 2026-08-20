@@ -87,6 +87,7 @@ def _config_from(args: argparse.Namespace) -> Config:
         enable_validation=False if args.no_validate else None,
         semgrep_enabled=True if args.semgrep else None,
         max_files=args.max_files,
+        max_reviews=getattr(args, "max_reviews", None),
         output_path=args.output,
         verbose=args.verbose,
     )
@@ -125,7 +126,7 @@ def cmd_review_pr(args: argparse.Namespace) -> int:
 
     if args.post:
         pruned = github.prune_old_reports(
-            args.number, keep=max(args.max_reviews - 1, 0), repo=args.repo
+            args.number, keep=max(config.max_reviews - 1, 0), repo=args.repo
         )
         if pruned:
             print(f"pruned {pruned} stale report(s)", file=sys.stderr)
@@ -249,7 +250,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Post as a GitHub review with per-line comments instead of one "
              "aggregated issue comment. Requires --post.",
     )
-    pr.add_argument("--max-reviews", type=int, default=5)
+    pr.add_argument(
+        "--max-reviews",
+        type=int,
+        default=None,
+        help="Reports to keep on the pull request (default 5).",
+    )
     _common(pr)
     pr.set_defaults(func=cmd_review_pr)
 

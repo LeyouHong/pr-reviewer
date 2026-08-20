@@ -48,6 +48,10 @@ class Config:
     # opt in via ``--semgrep`` when the environment is ready.
     semgrep_enabled: bool = False
     max_files: int = 100
+    # How many of our own reports a pull request keeps. Older ones are pruned
+    # before a new one lands, so a long-lived PR does not accumulate a wall of
+    # superseded reviews.
+    max_reviews: int = 5
 
     # Output
     post: bool = False

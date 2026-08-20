@@ -52,7 +52,6 @@ class FileReviewer:
         # even though it is constructed eagerly.
         self._researcher = Researcher(client, library, self._tools)
         self._agent_tool_specs = extended_tool_specs()
-        self._agent_dispatch = build_dispatch(self._tools, self._researcher)
 
     # -- public -----------------------------------------------------------
 
@@ -147,11 +146,14 @@ class FileReviewer:
 
     def _one_review(self, prompt: str, label: str) -> LLMFileChangeReview:
         if self._config.agentic_review:
+            # A dispatch per review, because the research budget lives in the
+            # closure: one shared across files would let the first large file
+            # spend everyone's allowance.
             return self._client.run_agent_structured(
                 prompt,
                 LLMFileChangeReview,
                 tool_specs=self._agent_tool_specs,
-                dispatch=self._agent_dispatch,
+                dispatch=build_dispatch(self._tools, self._researcher),
                 result_tool=_TOOL_NAME,
                 result_description=_TOOL_DESC,
                 max_turns=constants.MAX_TURNS_REVIEW,
