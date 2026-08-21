@@ -572,8 +572,7 @@ check("an ordinary comment does not re-trigger a reviewed revision",
       not review_flag and "already reviewed" in reason, reason)
 
 print("\n[11e] scan: revision-keyed dedup, trigger expiry, checkout scoping")
-from reviewer.pipeline.scan import _should_review, _scoped_to_checkout
-from reviewer.settings import RepoConfig
+from reviewer.pipeline.scan import _should_review
 from reviewer.constants import report_marker
 from reviewer.sources.github import parse_reviewed_sha
 
@@ -609,12 +608,8 @@ check("a !review already answered by a report does not re-fire", ok is False, wh
 ok, why = _should_review(_pr("cccc3333"), [_cm("!do-not-review")], [])
 check("opt-out beats an unreviewed revision", ok is False and "opted out" in why, why)
 
-# Without a checkout the file-reading stages must be off, never left aimed at cwd.
-base = Config(api_key="x", enable_validation=True, agentic_review=True)
-scoped, wt = _scoped_to_checkout(base, RepoConfig(url="o/r"), _pr("aaaa1111"), None)
-check("no checkout disables validation", scoped.enable_validation is False)
-check("no checkout disables agentic review", scoped.agentic_review is False)
-check("caller config untouched", base.enable_validation is True)
+# Pinning a review to the right checkout moved to sources/checkout.py and is
+# exercised against a real repository in smoke_serve.py.
 
 print("\n[11f] retry outcomes: degrade vs terminal, and jitter")
 import tempfile as _tf
