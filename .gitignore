@@ -39,3 +39,5 @@ crb_smoke.json
 
 # Regenerated from docs/architecture.html by docs/build.sh
 docs/*.pdf
+aacr_raw.json
+aacr_cases*.json
